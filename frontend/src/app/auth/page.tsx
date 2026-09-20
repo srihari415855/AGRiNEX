@@ -1,5 +1,5 @@
 "use client";
-import React, { useState } from "react";
+import React, { useState, Suspense } from "react";
 import { useNavigate, useSearchParams } from "@/lib/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -11,7 +11,7 @@ import { useApp } from "@/lib/AppContext";
 import { t } from "@/lib/i18n";
 import { Leaf } from "lucide-react";
 
-export default function Auth() {
+function AuthContent() {
   const nav = useNavigate();
   const [params] = useSearchParams();
   const { login, signup, lang } = useApp();
@@ -132,3 +132,12 @@ export default function Auth() {
     </div>
   );
 }
+
+export default function Auth() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-stone-50 flex items-center justify-center p-4 text-stone-500">Loading...</div>}>
+      <AuthContent />
+    </Suspense>
+  );
+}
+
