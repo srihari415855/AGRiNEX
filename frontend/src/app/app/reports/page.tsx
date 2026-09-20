@@ -14,7 +14,6 @@ import {
   Camera,
   PackageOpen,
   Droplets,
-  Download,
   Clock,
   ShieldCheck,
   CheckCircle2,
@@ -25,8 +24,6 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-import { downloadPdfFromEndpoint } from "@/lib/download";
-
 function formatInt(n: number | undefined | null): string {
   if (n === undefined || n === null) return "0";
   return new Intl.NumberFormat("en-US").format(n);
@@ -36,7 +33,6 @@ export default function ReportsPage() {
   const { lang, activeFarm } = useApp();
   const [masterReport, setMasterReport] = useState<any>(null);
   const [loading, setLoading] = useState(true);
-  const [downloading, setDownloading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
   const loadConsolidatedReport = async () => {
@@ -55,21 +51,6 @@ export default function ReportsPage() {
   useEffect(() => {
     loadConsolidatedReport();
   }, [activeFarm]);
-
-  const handleDownloadMaster = async () => {
-    setDownloading(true);
-    const target = activeFarm || "demo-farm";
-    try {
-      const farmName = masterReport?.data?.farm_name || "farm";
-      const filename = `agrinex_master_dossier_${farmName.replace(/\s+/g, "_").toLowerCase()}.pdf`;
-      await downloadPdfFromEndpoint(`${API}/reports/farm/${target}/master-report.pdf`, filename);
-      toast.success("Downloaded PDF file successfully to your system!");
-    } catch (e: any) {
-      toast.error("Download failed: " + e.message);
-    } finally {
-      setDownloading(false);
-    }
-  };
 
   const handleRefresh = async () => {
     setRefreshing(true);
@@ -109,18 +90,6 @@ export default function ReportsPage() {
               <RefreshCw size={14} className={refreshing ? "animate-spin" : ""} />
               Sync Latest Data
             </Button>
-            <Button
-              onClick={handleDownloadMaster}
-              disabled={downloading || loading}
-              className="bg-emerald-700 hover:bg-emerald-800 text-white font-semibold rounded-xl flex items-center gap-2 shadow-sm h-10 px-4 cursor-pointer"
-            >
-              {downloading ? (
-                <Sparkles className="animate-spin" size={16} />
-              ) : (
-                <Download size={16} />
-              )}
-              Download
-            </Button>
           </div>
         </div>
 
@@ -133,7 +102,7 @@ export default function ReportsPage() {
                   <Award size={13} /> Official Consolidated Master Report
                 </span>
                 <span className="text-xs text-stone-500 font-serif">
-                  Standard: Times New Roman, 12pt PDF
+                  Standard: Times New Roman, 12pt
                 </span>
               </div>
               <h2 className="text-2xl font-bold text-stone-900 pt-1">
@@ -144,25 +113,16 @@ export default function ReportsPage() {
                   "Complete unified document compiling physical infrastructure, live meteorological telemetry, digital twin sensors, saved soil analyses, foliar disease pathology, smart irrigation logs, and longitudinal resource analytics."}
               </p>
             </div>
-            <Button
-              size="lg"
-              onClick={handleDownloadMaster}
-              disabled={downloading || loading}
-              className="bg-emerald-700 hover:bg-emerald-800 text-white font-bold rounded-xl shadow-md flex items-center gap-2 shrink-0 cursor-pointer"
-            >
-              <Download size={18} />
-              Download
-            </Button>
           </div>
 
           <div className="mt-4 pt-4 border-t border-emerald-200/60 flex flex-wrap items-center gap-6 text-xs text-stone-600">
             <div className="flex items-center gap-1.5">
               <ShieldCheck size={16} className="text-emerald-700" />
-              <span className="font-semibold text-stone-900">One Consolidated Download:</span> Only 1 single master file (.PDF) covering all reports & analytics
+              <span className="font-semibold text-stone-900">Consolidated Master Dossier:</span> Complete verified dossier covering all farm records & analytics
             </div>
             <div className="flex items-center gap-1.5">
               <CheckCircle2 size={16} className="text-emerald-700" />
-              <span className="font-semibold text-stone-900">Font Standard:</span> Times New Roman &bull; 12pt Font Size (.PDF)
+              <span className="font-semibold text-stone-900">Typography:</span> Times New Roman &bull; 12pt Standard
             </div>
             <div className="flex items-center gap-1.5">
               <Clock size={16} className="text-stone-400" />

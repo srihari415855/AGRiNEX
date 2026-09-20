@@ -11,7 +11,6 @@ import {
   TrendingUp,
   Droplets,
   Leaf,
-  Download,
   Trash2,
   Save,
   Sparkles,
@@ -25,7 +24,6 @@ import {
   Calendar,
 } from "lucide-react";
 import { toast } from "sonner";
-import { downloadPdfFromEndpoint } from "@/lib/download";
 
 interface StoredReport {
   id: string;
@@ -59,7 +57,6 @@ export default function AnalyticsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [downloadingId, setDownloadingId] = useState<string | null>(null);
 
   const fetchFarmDynamicAnalytics = async () => {
     const target = activeFarm || "demo-farm";
@@ -117,34 +114,6 @@ export default function AnalyticsPage() {
       toast.success("Analytics report deleted from database.");
     } catch (err: any) {
       toast.error("Delete failed: " + (err.message || "Unknown error"));
-    }
-  };
-
-  const handleDownload = async (reportId: string, title?: string) => {
-    setDownloadingId(reportId);
-    try {
-      const filename = `agrinex_analytics_${reportId.slice(0, 8)}.pdf`;
-      await downloadPdfFromEndpoint(`${API}/reports/${reportId}/report.pdf`, filename);
-      toast.success("Downloaded PDF file successfully to your system!");
-    } catch (e: any) {
-      toast.error("Download failed: " + e.message);
-    } finally {
-      setDownloadingId(null);
-    }
-  };
-
-  const handleDownloadActiveReport = async () => {
-    const target = activeFarm || "demo-farm";
-    setDownloadingId("active-master");
-    try {
-      const fName = dynamicMaster?.data?.farm_name || "farm";
-      const filename = `agrinex_analytics_dossier_${fName.replace(/\s+/g, "_").toLowerCase()}.pdf`;
-      await downloadPdfFromEndpoint(`${API}/reports/farm/${target}/master-report.pdf`, filename);
-      toast.success("Downloaded PDF file successfully to your system!");
-    } catch (e: any) {
-      toast.error("Download failed: " + e.message);
-    } finally {
-      setDownloadingId(null);
     }
   };
 
@@ -209,18 +178,6 @@ export default function AnalyticsPage() {
                 <Save size={16} />
               )}
               Save Analytics Report to DB
-            </Button>
-            <Button
-              onClick={handleDownloadActiveReport}
-              disabled={downloadingId === "active-master" || loading}
-              className="bg-stone-900 hover:bg-stone-800 text-white font-bold rounded-xl flex items-center gap-1.5 shadow-sm h-10 px-4 cursor-pointer"
-            >
-              {downloadingId === "active-master" ? (
-                <Sparkles className="animate-spin" size={16} />
-              ) : (
-                <Download size={16} />
-              )}
-              Download
             </Button>
           </div>
         </div>
@@ -488,7 +445,7 @@ export default function AnalyticsPage() {
                       <div>
                         <div className="flex items-center gap-2 mb-1">
                           <span className="px-2 py-0.5 rounded-full text-xs font-bold uppercase bg-purple-100 text-purple-800 border border-purple-200">
-                            Analytics Snapshot (.PDF)
+                            Analytics Snapshot
                           </span>
                           <span className="text-xs text-stone-400">
                             {formatDateSafe(rep.created_at)}
@@ -498,19 +455,6 @@ export default function AnalyticsPage() {
                       </div>
 
                       <div className="flex items-center gap-1.5">
-                        <Button
-                          size="sm"
-                          onClick={() => handleDownload(rep.id, rep.title)}
-                          disabled={downloadingId === rep.id}
-                          className="bg-emerald-700 hover:bg-emerald-800 text-white text-xs rounded-xl h-8 px-3 flex items-center gap-1.5 cursor-pointer"
-                        >
-                          {downloadingId === rep.id ? (
-                            <Sparkles className="animate-spin" size={13} />
-                          ) : (
-                            <Download size={13} />
-                          )}
-                          Download
-                        </Button>
                         <Button
                           size="sm"
                           variant="ghost"
