@@ -22,6 +22,7 @@ import {
   ShieldCheck,
   CheckCircle2,
   Calendar,
+  Clock,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -32,6 +33,10 @@ interface StoredReport {
   summary_text: string;
   data: any;
   created_at: string;
+  created_at_ist?: string;
+  time_str?: string;
+  date_str?: string;
+  timezone?: string;
 }
 
 function formatInt(n: number | undefined | null): string {
@@ -39,14 +44,37 @@ function formatInt(n: number | undefined | null): string {
   return new Intl.NumberFormat("en-US").format(n);
 }
 
-function formatDateSafe(dateStr?: string | null): string {
-  if (!dateStr) return "Recent";
+function formatDateSafe(dateStr?: string | null, rep?: StoredReport): string {
+  if (rep?.created_at_ist) {
+    return rep.created_at_ist;
+  }
+  if (rep?.time_str && rep?.date_str) {
+    return `${rep.time_str} IST • ${rep.date_str}`;
+  }
+  if (!dateStr) return "Synchronized Live";
   try {
-    const d = new Date(dateStr);
-    if (isNaN(d.getTime())) return "Recent";
-    return d.toISOString().replace("T", " ").slice(0, 16) + " UTC";
+    let s = String(dateStr).trim();
+    if (!s.endsWith("Z") && !/[+-]\d{2}:\d{2}$/.test(s)) {
+      s += "Z";
+    }
+    const d = new Date(s);
+    if (isNaN(d.getTime())) return "Synchronized Live";
+    const time = d.toLocaleTimeString("en-US", {
+      timeZone: "Asia/Kolkata",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: true,
+    });
+    const date = d.toLocaleDateString("en-US", {
+      timeZone: "Asia/Kolkata",
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    });
+    return `${time} IST • ${date}`;
   } catch {
-    return "Recent";
+    return "Synchronized Live";
   }
 }
 
@@ -57,6 +85,13 @@ export default function AnalyticsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [clockTime, setClockTime] = useState<Date | null>(null);
+
+  useEffect(() => {
+    setClockTime(new Date());
+    const timer = setInterval(() => setClockTime(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   const fetchFarmDynamicAnalytics = async () => {
     const target = activeFarm || "demo-farm";
@@ -182,6 +217,53 @@ export default function AnalyticsPage() {
           </div>
         </div>
 
+        {/* Real-Time Live Farm Synchronized Clock & Location Banner */}
+        {clockTime && (
+          <div className="flex items-center justify-between p-3.5 rounded-2xl bg-gradient-to-r from-emerald-900 to-emerald-950 text-white shadow-sm flex-wrap gap-3">
+            <div className="flex items-center gap-3">
+              <div className="p-2 rounded-xl bg-white/10 backdrop-blur-xs text-emerald-300">
+                <Clock size={20} className="animate-pulse" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xl font-black font-mono tracking-tight text-white">
+                    {clockTime.toLocaleTimeString("en-US", {
+                      timeZone: "Asia/Kolkata",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                      second: "2-digit",
+                      hour12: true,
+                    })}
+                  </span>
+                  <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                    IST (UTC+05:30)
+                  </span>
+                </div>
+                <div className="text-xs text-emerald-200/80 font-medium">
+                  {clockTime.toLocaleDateString("en-US", {
+                    timeZone: "Asia/Kolkata",
+                    weekday: "long",
+                    month: "long",
+                    day: "numeric",
+                    year: "numeric",
+                  })}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3 text-xs text-emerald-200/70">
+              <span className="flex items-center gap-1.5 font-medium">
+                <MapPin size={13} className="text-emerald-400" />
+                {activeFarmLoc}
+              </span>
+              <span>•</span>
+              <span className="bg-emerald-800/60 px-2 py-0.5 rounded text-[11px] text-emerald-200 font-semibold border border-emerald-700/50">
+                Live Farm Telemetry Active
+              </span>
+            </div>
+          </div>
+        )}
+
         {/* Dynamic KPI Cards */}
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
           <Card className="rounded-2xl border border-stone-200 bg-white shadow-xs hover:border-emerald-300 transition-all">
@@ -245,7 +327,7 @@ export default function AnalyticsPage() {
 
         {/* Detailed Agro-Climatic Intelligence Section */}
         <div className="space-y-4">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
             <div>
               <h2 className="text-xl font-bold text-stone-900 flex items-center gap-2">
                 <Sparkles size={20} className="text-emerald-700" />
@@ -255,9 +337,17 @@ export default function AnalyticsPage() {
                 Detailed algorithmic explanation of how live meteorological telemetry, soil physics, and crop varieties govern these metrics.
               </p>
             </div>
-            <span className="hidden sm:inline-flex items-center gap-1 text-xs text-stone-500 font-medium bg-stone-100 px-2.5 py-1 rounded-lg">
-              <CheckCircle2 size={13} className="text-emerald-700" /> Auto-computed for {activeFarmName}
-            </span>
+            <div className="flex items-center gap-2">
+              {mData.generated_at_ist && (
+                <span className="inline-flex items-center gap-1.5 text-xs text-emerald-800 font-mono bg-emerald-50 border border-emerald-200 px-3 py-1 rounded-xl">
+                  <Clock size={12} className="text-emerald-700" />
+                  Calculated: {mData.generated_at_ist.split(" • ")[0]} IST
+                </span>
+              )}
+              <span className="hidden sm:inline-flex items-center gap-1 text-xs text-stone-500 font-medium bg-stone-100 px-2.5 py-1 rounded-lg">
+                <CheckCircle2 size={13} className="text-emerald-700" /> Auto-computed for {activeFarmName}
+              </span>
+            </div>
           </div>
 
           <div className="grid md:grid-cols-2 gap-4">
@@ -448,7 +538,7 @@ export default function AnalyticsPage() {
                             Analytics Snapshot
                           </span>
                           <span className="text-xs text-stone-400">
-                            {formatDateSafe(rep.created_at)}
+                            {formatDateSafe(rep.created_at, rep)}
                           </span>
                         </div>
                         <h3 className="text-base font-bold text-stone-900">{rep.title}</h3>

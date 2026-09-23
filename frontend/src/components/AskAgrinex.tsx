@@ -1,6 +1,8 @@
 "use client";
 import { useState, useRef, useEffect } from "react";
 import { Mic, Send, X, Bot, User } from "lucide-react";
+import { api } from "@/lib/api";
+import { speakText } from "@/lib/voice";
 
 type Message = {
   role: "user" | "bot";
@@ -32,17 +34,19 @@ export default function AskAgrinex({ token }: { token: string }) {
     setIsLoading(true);
 
     try {
-      const res = await fetch("http://localhost:8000/ai/chat", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`
-        },
-        body: JSON.stringify({ message: userMsg })
+      const historyPayload = messages.slice(-8).map(m => ({
+        role: m.role === "user" ? "user" : "assistant",
+        text: m.content
+      }));
+
+      const res = await api.post("/ask", {
+        message: userMsg,
+        language: "en",
+        history: historyPayload
       });
-      if (res.ok) {
-        const data = await res.json();
-        setMessages(prev => [...prev, { role: "bot", content: data.reply }]);
+      if (res.data?.reply) {
+        setMessages(prev => [...prev, { role: "bot", content: res.data.reply }]);
+        speakText({ text: res.data.reply });
       }
     } catch (e) {
       console.error(e);

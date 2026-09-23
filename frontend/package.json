@@ -23,7 +23,8 @@
     "react-dom": "19.2.8",
     "recharts": "^3.10.1",
     "sonner": "^2.0.8",
-    "tailwind-merge": "^3.7.0"
+    "tailwind-merge": "^3.7.0",
+    "unrs-resolver": "^1.12.2"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

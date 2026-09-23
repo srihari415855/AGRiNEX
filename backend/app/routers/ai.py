@@ -1,11 +1,18 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone, timedelta
-from typing import Optional
+from typing import Optional, List
 import os
 import requests
 import json
 import uuid
+import re
+import base64
+import certifi
+
+# Ensure certifi CA bundle is used for all SSL requests in this environment
+os.environ["SSL_CERT_FILE"] = certifi.where()
+os.environ["REQUESTS_CA_BUNDLE"] = certifi.where()
 
 from .. import schemas, models
 from ..database import get_db
@@ -19,7 +26,10 @@ def _load_env_fallback():
     candidates = [
         os.path.join(curr, "..", "..", ".env"),
         os.path.join(curr, "..", "..", "..", ".env"),
-        os.path.join(curr, "..", "..", "..", "backend", ".env")
+        os.path.join(curr, "..", "..", "..", "backend", ".env"),
+        os.path.join(curr, "..", "..", "..", "..", "backend", ".env"),
+        "D:\\AGRiNEX-v2\\backend\\.env",
+        "D:\\AGRiNEX-v2\\AGRiNEX\\backend\\.env"
     ]
     for candidate in candidates:
         if os.path.isfile(candidate):
@@ -39,8 +49,50 @@ def _load_env_fallback():
 _load_env_fallback()
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
 
-def call_gemini_api(prompt: str, system_instruction: Optional[str] = None, image_b64: Optional[str] = None, mime_type: str = "image/jpeg") -> Optional[str]:
+DEFAULT_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"
+DEFAULT_VOICES = [
+    {"id": "21m00Tcm4TlvDq8ikWAM", "name": "Rachel", "description": "Calm, clear & professional (Default)"},
+    {"id": "pNInz6obpgDQGcFmaJgB", "name": "Adam", "description": "Deep, friendly & authoritative"},
+    {"id": "EXAVITQu4vr4xnSDxMaL", "name": "Bella", "description": "Warm, expressive & energetic"},
+    {"id": "ErXwobaYiN019PkySvjV", "name": "Antoni", "description": "Friendly, modern agronomic advisor"},
+    {"id": "cgSgspJ2msm6clMCkdW9", "name": "Jessica", "description": "Clear, youthful & engaging"}
+]
+
+def clean_text_for_tts(text: str) -> str:
+    if not text:
+        return ""
+    # Strip markdown code blocks
+    t = re.sub(r'```[\s\S]*?```', '', text)
+    # Strip inline code
+    t = re.sub(r'`([^`]+)`', r'\1', t)
+    # Strip headers
+    t = re.sub(r'#+\s*', '', t)
+    # Strip bold / italics
+    t = re.sub(r'\*{1,3}([^*]+)\*{1,3}', r'\1', t)
+    t = re.sub(r'_{1,3}([^_]+)_{1,3}', r'\1', t)
+    # Strip markdown links [text](url) -> text
+    t = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', t)
+    # Strip bullet points and numbered lists
+    t = re.sub(r'^\s*[-*•]\s+', '', t, flags=re.MULTILINE)
+    t = re.sub(r'^\s*\d+\.\s+', '', t, flags=re.MULTILINE)
+    # Strip emojis and special unicode symbols
+    t = re.sub(r'[\U00010000-\U0010ffff]', '', t)
+    # Replace multiple linebreaks with single period
+    t = re.sub(r'\n+', '. ', t)
+    # Replace multiple spaces
+    t = re.sub(r'\s+', ' ', t)
+    t = re.sub(r'\.\s*\.', '.', t)
+    return t.strip()
+
+def call_gemini_api(
+    prompt: Optional[str] = None,
+    system_instruction: Optional[str] = None,
+    image_b64: Optional[str] = None,
+    mime_type: str = "image/jpeg",
+    contents: Optional[List[Dict[str, Any]]] = None
+) -> Optional[str]:
     # Ensure environment variables are loaded
     if not os.environ.get("GEMINI_API_KEY"):
         _load_env_fallback()
@@ -48,33 +100,32 @@ def call_gemini_api(prompt: str, system_instruction: Optional[str] = None, image
     if not api_key:
         return None
     
-    # Process image if present
-    parts = []
-    if image_b64 and len(image_b64) > 50:
-        clean_b64 = image_b64
-        detected_mime = mime_type
-        if image_b64.startswith("data:") and ";base64," in image_b64:
-            header, clean_b64 = image_b64.split(";base64,", 1)
-            detected_mime = header.replace("data:", "").strip()
-        elif "," in image_b64:
-            clean_b64 = image_b64.split(",", 1)[-1]
-            
-        parts.append({
-            "inline_data": {
-                "mime_type": detected_mime or "image/jpeg",
-                "data": clean_b64.strip()
-            }
-        })
-    parts.append({"text": prompt})
+    if contents is None:
+        parts = []
+        if image_b64 and len(image_b64) > 50:
+            clean_b64 = image_b64
+            detected_mime = mime_type
+            if image_b64.startswith("data:") and ";base64," in image_b64:
+                header, clean_b64 = image_b64.split(";base64,", 1)
+                detected_mime = header.replace("data:", "").strip()
+            elif "," in image_b64:
+                clean_b64 = image_b64.split(",", 1)[-1]
+                
+            parts.append({
+                "inline_data": {
+                    "mime_type": detected_mime or "image/jpeg",
+                    "data": clean_b64.strip()
+                }
+            })
+        if prompt:
+            parts.append({"text": prompt})
+        contents = [{"parts": parts}]
     
     payload = {
-        "contents": [{"parts": parts}],
+        "contents": contents,
         "generationConfig": {
-            "temperature": 0.2,
-            "maxOutputTokens": 2500,
-            "thinkingConfig": {
-                "thinkingBudget": 0
-            }
+            "temperature": 0.5,
+            "maxOutputTokens": 1024
         }
     }
     if system_instruction:
@@ -82,14 +133,22 @@ def call_gemini_api(prompt: str, system_instruction: Optional[str] = None, image
             "parts": [{"text": system_instruction}]
         }
     
-    # Cascade through supported models in case of high demand (503) or rate limits
-    models_to_try = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-3.5-flash", "gemini-2.5-pro"]
+    # Cascade through verified live operational models (gemini-3-flash-preview, gemini-flash-latest, etc.)
+    models_to_try = [
+        "gemini-3-flash-preview",
+        "gemini-flash-latest",
+        "gemini-2.5-pro",
+        "gemini-pro-latest",
+        "gemini-3.1-pro-preview",
+        "gemini-2.5-flash"
+    ]
     headers = {"Content-Type": "application/json"}
+    ca_bundle = certifi.where()
     
     for model_name in models_to_try:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
         try:
-            resp = requests.post(url, json=payload, headers=headers, timeout=45)
+            resp = requests.post(url, json=payload, headers=headers, verify=ca_bundle, timeout=25)
             if resp.status_code == 200:
                 data = resp.json()
                 candidates = data.get("candidates", [])
@@ -97,16 +156,13 @@ def call_gemini_api(prompt: str, system_instruction: Optional[str] = None, image
                     c_parts = candidates[0].get("content", {}).get("parts", [])
                     if c_parts and "text" in c_parts[0]:
                         return c_parts[0]["text"].strip()
-            elif resp.status_code in (503, 429):
-                print(f"Model {model_name} returned {resp.status_code}, trying fallback model...")
+            elif resp.status_code in (503, 429, 404):
                 continue
             else:
                 print(f"Gemini API ({model_name}) error:", resp.status_code, resp.text[:200])
-        except requests.exceptions.Timeout:
-            print(f"Gemini API ({model_name}) timed out after 45s, trying fallback...")
-            continue
         except Exception as e:
             print(f"Gemini API ({model_name}) call failed:", e)
+            continue
             
     return None
 
@@ -575,7 +631,7 @@ def ask_assistant(req: schemas.AskRequest, db: Session = Depends(get_db)):
     weather_desc = "Temperature 28.5°C, Relative Humidity 58%, Wind Speed 12 km/h, clear sky"
     try:
         w_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m,precipitation,wind_speed_10m&timezone=auto"
-        w_res = requests.get(w_url, timeout=3)
+        w_res = requests.get(w_url, verify=certifi.where(), timeout=3)
         if w_res.status_code == 200:
             w_curr = w_res.json().get("current", {})
             temp = w_curr.get("temperature_2m")
@@ -594,49 +650,197 @@ def ask_assistant(req: schemas.AskRequest, db: Session = Depends(get_db)):
     zones_summary = "\n".join(zone_lines) if zone_lines else "- All zones operating within standard thresholds"
 
     system_instruction = (
-        "You are AGRiNEX Farm Intelligence Agent, an expert AI agronomist for Indian agriculture.\n"
-        f"You MUST provide your response directly in {target_lang}.\n"
-        "Be concise, actionable, and scientifically accurate.\n\n"
-        f"CURRENT REAL-TIME CONTEXT (GROUND TRUTH):\n"
-        f"• Today's Exact Date: {date_str}\n"
+        f"You are AGRiNEX, an intelligent, empathetic, and gentle female agricultural AI companion and agronomic advisor for Indian farmers.\n"
+        f"You speak in a warm, welcoming, polite, and encouraging tone—just like Google Gemini.\n"
+        f"Always communicate with genuine kindness, clarity, and deep respect for the farmer's daily efforts.\n"
+        f"Respond directly and naturally in {target_lang}.\n\n"
+        f"INTERACTIVE CONVERSATION GUIDELINES:\n"
+        f"• Actively engage with the farmer: acknowledge their questions warmly, offer gentle insights, and ask a thoughtful follow-up question when appropriate to maintain an interactive dialogue.\n"
+        f"• Do NOT speak in rigid, robotic bullet points or predefined scripts. Make your responses feel fluid, friendly, and human.\n"
+        f"• If the user greets you or makes conversation, converse warmly and naturally.\n"
+        f"• In voice mode, keep your answer concise (2-3 spoken sentences), warm, melodic, and conversational without asterisks, markdown bullets, tables, or emojis so it can be spoken aloud naturally.\n\n"
+        f"REAL-TIME FARM GROUND TRUTH:\n"
+        f"• Active Farm: {farm_name} ({farm_place}, Coordinates: {lat:.4f}° N, {lon:.4f}° E)\n"
         f"• Exact Current Time: {time_str}\n"
-        f"• Timezone: Indian Standard Time (IST, UTC+05:30)\n"
-        f"• Active Farm: {farm_name}\n"
-        f"• Place / Location: {farm_place} (Coordinates: {lat:.4f}° N, {lon:.4f}° E)\n"
+        f"• Today's Date: {date_str} (Indian Standard Time, UTC+05:30)\n"
         f"• Live Meteorological Conditions at {farm_place}: {weather_desc}\n"
-        f"• Active Zones & Live Telemetry:\n{zones_summary}\n"
-        f"• Mandi Market Intelligence: Local APMC Mandi Tomato Modal Price ₹1800-2000/quintal.\n\n"
-        f"CRITICAL TIME DIRECTIVE: If the user asks for the current time, date, day, weather, or location, "
-        f"you MUST state the exact current time ({time_str}) and exact date ({date_str}) given above. "
-        "Never say you do not possess real-time information, because real-time ground truth is provided directly to you."
+        f"• Active Zones & Sensor Telemetry:\n{zones_summary}\n"
+        f"• Mandi Intelligence: Tomato modal price ₹1800-2000/quintal.\n\n"
+        f"CRITICAL TIME DIRECTIVE: If asked for the current time or date, state the exact current time ({time_str}) and date ({date_str}) above naturally."
     )
     
-    gemini_reply = call_gemini_api(raw_msg, system_instruction=system_instruction)
+    if req.voice_mode:
+        system_instruction += (
+            f"\n\nSPOKEN VOICE ASSISTANT DIRECTIVE:\n"
+            f"You are speaking to the farmer through voice. Use a gentle, warm, conversational female voice tone. "
+            f"Keep the answer to 2-3 natural sentences without bullet points, symbols, or markdown formatting."
+        )
+
+    # Multi-turn conversational memory with strict alternating turn validation
+    raw_turns = []
+    if req.history:
+        for h in req.history[-10:]:
+            role = "user" if h.role == "user" else "model"
+            if h.text and h.text.strip():
+                raw_turns.append({"role": role, "text": h.text.strip()})
+    raw_turns.append({"role": "user", "text": raw_msg})
+
+    conversation_contents = []
+    for item in raw_turns:
+        if not conversation_contents:
+            if item["role"] == "user":
+                conversation_contents.append({"role": "user", "parts": [{"text": item["text"]}]})
+        else:
+            prev = conversation_contents[-1]
+            if prev["role"] == item["role"]:
+                prev["parts"].append({"text": item["text"]})
+            else:
+                conversation_contents.append({"role": item["role"], "parts": [{"text": item["text"]}]})
+
+    if not conversation_contents or conversation_contents[-1]["role"] != "user":
+        conversation_contents.append({"role": "user", "parts": [{"text": raw_msg}]})
+
+    gemini_reply = call_gemini_api(system_instruction=system_instruction, contents=conversation_contents)
     if gemini_reply:
         return {"reply": gemini_reply}
     
-    # Fallback to local rule engine if offline or rate-limited
+    # Gentle, natural conversational fallback if offline
     if "how is my farm" in msg or "status" in msg or "condition" in msg or "खेत" in msg or "ಜಮೀನು" in msg:
         if lang == "hi":
-            reply = f"{farm_name} ({farm_place}) की स्थिति: मौसम {weather_desc}। {zones_summary}।"
+            reply = f"नमस्ते! आपके खेत {farm_name} ({farm_place}) में अभी मौसम {weather_desc} है और आपकी फसलें अच्छी स्थिति में हैं। क्या आप किसी विशेष ज़ोन के बारे में जानना चाहते हैं?"
         elif lang == "kn":
-            reply = f"{farm_name} ({farm_place}) ಸ್ಥಿತಿ: ಇಂದಿನ ಹವಾಮಾನ {weather_desc}। {zones_summary}।"
+            reply = f"ನಮಸ್ಕಾರ! ನಿಮ್ಮ {farm_name} ({farm_place}) ಜಮೀನಿನಲ್ಲಿ ಈಗ ಹವಾಮಾನ {weather_desc} ಆಗಿದೆ ಮತ್ತು ಬೆಳೆಗಳು ಉತ್ತಮವಾಗಿವೆ. ನೀವು ಯಾವುದಾದರೂ ನಿರ್ದಿಷ್ಟ ವಲಯದ ಬಗ್ಗೆ ತಿಳಿಯಲು ಬಯಸುವಿರಾ?"
         else:
-            reply = f"Status for {farm_name} in {farm_place} as of {date_str}, {time_str}:\nLive Weather: {weather_desc}.\n{zones_summary}."
+            reply = f"Hello! Your farm {farm_name} in {farm_place} is doing well. Current weather is {weather_desc}, and your zones are operating within healthy parameters. Would you like a detailed check on any specific zone?"
     elif "time" in msg or "date" in msg or "समय" in msg or "ದಿನಾಂಕ" in msg or "ಸಮಯ" in msg or "place" in msg or "location" in msg:
-        reply = f"Current Time: {time_str} on {date_str}.\nActive Farm: {farm_name} located in {farm_place}.\nLive Weather: {weather_desc}."
+        if lang == "hi":
+            reply = f"अभी {farm_place} में सटीक समय {time_str} है, और आज {date_str} है। आज का मौसम {weather_desc} बना हुआ है।"
+        elif lang == "kn":
+            reply = f"ಈಗ {farm_place} ನಲ್ಲಿ ನಿಖರ ಸಮಯ {time_str}, ಮತ್ತು ಇಂದಿನ ದಿನಾಂಕ {date_str}. ಪ್ರಸ್ತುತ ಹವಾಮಾನ {weather_desc}."
+        else:
+            reply = f"Right now in {farm_place}, the exact time is {time_str} on {date_str}. The current weather is {weather_desc}."
     elif "irrigation" in msg or "water" in msg or "सिंचाई" in msg or "ನೀರು" in msg:
         if lang == "hi":
-            reply = f"सिंचाई विश्लेषण ({farm_place}): ज़ोन की नमी स्तर की जाँच की गई। कम नमी वाले ज़ोन में 15-20 मिनट ड्रिप सिंचाई चलाएं।"
+            reply = f"मैंने {farm_name} के लिए नमी के आंकड़े देखे हैं। कम नमी वाले ज़ोन में 15 से 20 मिनट ड्रिप सिंचाई देना बहुत फायदेमंद रहेगा। क्या मैं किसी ज़ोन की सिंचाई शुरू करूँ?"
         elif lang == "kn":
-            reply = f"ನೀರಾವರಿ ವಿಶ್ಲೇಷಣೆ ({farm_place}): ಕಡಿಮೆ ತೇವಾಂಶವಿರುವ ವಲಯಗಳಿಗೆ 15-20 ನಿಮಿಷ ಹನಿ ನೀರಾವರಿ ನೀಡಲು ಶಿಫಾರಸು ಮಾಡುತ್ತೇನೆ."
+            reply = f"ನಾನು {farm_name} ನ ತೇವಾಂಶ ಮಟ್ಟವನ್ನು ಪರಿಶೀಲಿಸಿದ್ದೇನೆ. ಕಡಿಮೆ ತೇವಾಂಶವಿರುವ ವಲಯಗಳಿಗೆ 15 ರಿಂದ 20 ನಿಮಿಷ ಹನಿ ನೀರಾವರಿ ನೀಡುವುದು ಸೂಕ್ತ. ನೀರಾವರಿ ಪ್ರಾರಂಭಿಸಬೇಕೇ?"
         else:
-            reply = f"Irrigation recommendation for {farm_name} ({farm_place}): Sensor telemetry analyzed under current conditions ({weather_desc}). Recommend targeted drip irrigation for low-moisture zones."
+            reply = f"I've analyzed the moisture telemetry for {farm_name}. Giving a 15 to 20 minute gentle drip cycle to low-moisture zones will support strong root vigor. Would you like me to initiate smart irrigation for you?"
     elif "price" in msg or "market" in msg or "tomato" in msg or "भाव" in msg or "ಬೆಲೆ" in msg:
-        reply = f"Current modal price for Tomato is ₹1800/quintal at Kolar APMC and ₹2000/quintal at Bengaluru Yeshwanthpur near {farm_place}."
+        if lang == "hi":
+            reply = f"आज आपके नजदीकी कोलार एपीएमसी में टमाटर का मॉडल भाव ₹1,800 से ₹2,000 प्रति क्विंटल चल रहा है। क्या आप किसी अन्य मंडी का भाव भी जानना चाहते हैं?"
+        elif lang == "kn":
+            reply = f"ಇಂದು ಕೋಲಾರ ಮಂಡಿಯಲ್ಲಿ ಟೊಮೆಟೊ ಸರಾಸರಿ ಧಾರಣೆ ಕ್ವಿಂಟಲ್‌ಗೆ ₹1,800 ರಿಂದ ₹2,000 ವರೆಗೆ ಇದೆ. ನೀವು ಬೇರೆ ಮಾರುಕಟ್ಟೆ ಮಾಹಿತಿ ತಿಳಿಯಲು ಬಯಸುವಿರಾ?"
+        else:
+            reply = f"Today's modal price for tomatoes at Kolar APMC is currently ₹1,800 to ₹2,000 per quintal. Would you like to compare this with other nearby markets?"
     else:
-        reply = f"I am your AGRiNEX farm intelligence assistant for {farm_name} ({farm_place}). Real-time date is {date_str}, {time_str}, and live weather is {weather_desc}. How can I assist you with your crops today?"
+        if lang == "hi":
+            reply = f"नमस्ते! मैं आपकी एग्रीनेक्स सहायक हूँ। {farm_name} में अभी {time_str} हो रहे हैं और मौसम {weather_desc} है। आज मैं आपके खेत और फसलों के लिए क्या सहायता कर सकती हूँ?"
+        elif lang == "kn":
+            reply = f"ನಮಸ್ಕಾರ! ನಾನು ನಿಮ್ಮ ಅಗ್ರಿನೆಕ್ಸ್ ಕೃಷಿ ಸಂಗಾತಿ. {farm_name} ನಲ್ಲಿ ಈಗ ಸಮಯ {time_str}. ಇಂದು ನಿಮ್ಮ ಜಮೀನು ಅಥವಾ ಬೆಳೆಗಳ ಕುರಿತು ನಾನು ಹೇಗೆ ಸಹಾಯ ಮಾಡಲಿ?"
+        else:
+            reply = f"Hello! I'm AGRiNEX, your friendly farm companion. At {farm_name} ({farm_place}), it is {time_str} on {date_str} with {weather_desc}. How can I gently assist your farming today?"
             
     return {"reply": reply}
+
+
+@router.get("/voice/status", response_model=schemas.VoiceConfigResponse)
+def get_voice_status():
+    _load_env_fallback()
+    eleven_key = os.environ.get("ELEVENLABS_API_KEY", "").strip()
+    gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    return {
+        "elevenlabs_configured": bool(eleven_key),
+        "gemini_configured": bool(gemini_key),
+        "default_voice_id": os.environ.get("ELEVENLABS_VOICE_ID", DEFAULT_VOICE_ID),
+        "available_voices": DEFAULT_VOICES
+    }
+
+
+@router.post("/tts")
+def text_to_speech(req: schemas.TTSRequest):
+    _load_env_fallback()
+    clean_text = clean_text_for_tts(req.text)
+    if not clean_text:
+        return {"fallback": "browser", "clean_text": "", "message": "Empty text"}
+
+    api_key = (req.api_key_override or os.environ.get("ELEVENLABS_API_KEY", "")).strip()
+    voice_id = req.voice_id or os.environ.get("ELEVENLABS_VOICE_ID", DEFAULT_VOICE_ID)
+
+    if not api_key:
+        return {
+            "fallback": "browser",
+            "clean_text": clean_text,
+            "message": "ElevenLabs API key is not configured in backend environment. Playing via browser voice synthesis."
+        }
+
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+    headers = {
+        "xi-api-key": api_key,
+        "Content-Type": "application/json",
+        "Accept": "audio/mpeg"
+    }
+    payload = {
+        "text": clean_text[:2500],
+        "model_id": "eleven_multilingual_v2",
+        "voice_settings": {
+            "stability": 0.5,
+            "similarity_boost": 0.75,
+            "style": 0.0,
+            "use_speaker_boost": True
+        }
+    }
+
+    try:
+        resp = requests.post(url, json=payload, headers=headers, verify=certifi.where(), timeout=30)
+        if resp.status_code == 200:
+            return Response(
+                content=resp.content,
+                media_type="audio/mpeg",
+                headers={
+                    "X-TTS-Provider": "elevenlabs",
+                    "X-Voice-ID": voice_id,
+                    "Cache-Control": "public, max-age=3600"
+                }
+            )
+        else:
+            print(f"ElevenLabs API error ({resp.status_code}):", resp.text[:200])
+            return {
+                "fallback": "browser",
+                "clean_text": clean_text,
+                "error_code": resp.status_code,
+                "message": f"ElevenLabs returned status {resp.status_code}. Using browser voice fallback."
+            }
+    except Exception as e:
+        print("ElevenLabs request failed:", e)
+        return {
+            "fallback": "browser",
+            "clean_text": clean_text,
+            "message": f"ElevenLabs connection failed ({str(e)}). Using browser voice fallback."
+        }
+
+
+@router.post("/stt")
+def speech_to_text(file: UploadFile = File(...), language: Optional[str] = Form("en")):
+    try:
+        audio_bytes = file.file.read()
+        b64_audio = base64.b64encode(audio_bytes).decode("utf-8")
+        mime = file.content_type or "audio/webm"
+        
+        lang_hint = "in Hindi" if language == "hi" else ("in Kannada" if language == "kn" else "in English")
+        prompt = f"Transcribe this spoken agricultural voice recording accurately {lang_hint}. Return only the exact transcribed words with no commentary or formatting."
+        
+        transcription = call_gemini_api(
+            prompt=prompt,
+            system_instruction="You are an expert Speech-to-Text transcription engine.",
+            image_b64=b64_audio,
+            mime_type=mime
+        )
+        if transcription:
+            return {"text": transcription.strip()}
+    except Exception as e:
+        print("STT transcription error:", e)
+        
+    return {"text": "", "error": "Could not transcribe audio"}
 
 

@@ -660,16 +660,19 @@ def get_consolidated_master_report(
         (models.Analysis.farm_id == fid) | (models.Analysis.user_id == current_user.id)
     ).order_by(models.Analysis.created_at.desc()).all()
 
+    now_utc = datetime.now(timezone.utc)
+    now_ist = now_utc + timedelta(hours=5, minutes=30)
+
     def format_analysis_entry(a):
         dt = a.created_at
         if dt and dt.tzinfo is None:
             dt_utc = dt.replace(tzinfo=timezone.utc)
         else:
-            dt_utc = dt or datetime.now(timezone.utc)
+            dt_utc = dt or now_utc
         ist_time = dt_utc + timedelta(hours=5, minutes=30)
         return {
             "id": a.id,
-            "created_at": dt_utc.isoformat(),
+            "created_at": dt_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "created_at_ist": ist_time.strftime("%I:%M:%S %p IST • %A, %B %d, %Y"),
             "time_str": ist_time.strftime("%I:%M:%S %p"),
             "date_str": ist_time.strftime("%A, %B %d, %Y"),
@@ -682,33 +685,49 @@ def get_consolidated_master_report(
 
     # Irrigations
     irrigations = db.query(models.IrrigationEvent).filter(models.IrrigationEvent.user_id == current_user.id).order_by(models.IrrigationEvent.created_at.desc()).all()
-    irrig_list = [
-        {
+    irrig_list = []
+    for ev in irrigations:
+        e_dt = ev.created_at
+        if e_dt and e_dt.tzinfo is None:
+            e_dt_utc = e_dt.replace(tzinfo=timezone.utc)
+        else:
+            e_dt_utc = e_dt or now_utc
+        e_ist = e_dt_utc + timedelta(hours=5, minutes=30)
+        irrig_list.append({
             "id": ev.id,
             "zone_id": ev.zone_id,
             "duration_minutes": ev.duration_minutes,
             "state": ev.state,
-            "created_at": ev.created_at.isoformat()
-        }
-        for ev in irrigations
-    ]
+            "created_at": e_dt_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "created_at_ist": e_ist.strftime("%I:%M:%S %p IST • %A, %B %d, %Y"),
+            "time_str": e_ist.strftime("%I:%M:%S %p"),
+            "date_str": e_ist.strftime("%A, %B %d, %Y")
+        })
 
     # Production
     productions = db.query(models.ProductionRecord).filter(
         (models.ProductionRecord.farm_id == fid) | (models.ProductionRecord.user_id == current_user.id)
     ).order_by(models.ProductionRecord.created_at.desc()).all()
-    prod_list = [
-        {
+    prod_list = []
+    for p in productions:
+        p_dt = p.created_at
+        if p_dt and p_dt.tzinfo is None:
+            p_dt_utc = p_dt.replace(tzinfo=timezone.utc)
+        else:
+            p_dt_utc = p_dt or now_utc
+        p_ist = p_dt_utc + timedelta(hours=5, minutes=30)
+        prod_list.append({
             "id": p.id,
             "crop": p.crop,
             "quantity": p.quantity,
             "unit": p.unit,
             "quality": p.quality or "Standard",
             "notes": p.notes or "",
-            "created_at": p.created_at.isoformat()
-        }
-        for p in productions
-    ]
+            "created_at": p_dt_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "created_at_ist": p_ist.strftime("%I:%M:%S %p IST • %A, %B %d, %Y"),
+            "time_str": p_ist.strftime("%I:%M:%S %p"),
+            "date_str": p_ist.strftime("%A, %B %d, %Y")
+        })
 
     # Compute fully dynamic analytics based on live weather, soil, crop varieties, farm location & area
     analytics_data = compute_dynamic_farm_analytics(
@@ -744,10 +763,10 @@ def get_consolidated_master_report(
         "irrigation_events": irrig_list,
         "production_records": prod_list,
         "analytics": analytics_data,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "generated_at_ist": (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).strftime("%I:%M:%S %p IST • %A, %B %d, %Y"),
-        "generated_at_time": (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).strftime("%I:%M:%S %p"),
-        "generated_at_date": (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).strftime("%A, %B %d, %Y"),
+        "generated_at": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "generated_at_ist": now_ist.strftime("%I:%M:%S %p IST • %A, %B %d, %Y"),
+        "generated_at_time": now_ist.strftime("%I:%M:%S %p"),
+        "generated_at_date": now_ist.strftime("%A, %B %d, %Y"),
         "timezone": "IST (UTC+05:30)"
     }
 
@@ -825,7 +844,34 @@ def generate_and_save_analytics_report(
     db.add(rep)
     db.commit()
     db.refresh(rep)
-    return rep
+
+    now_utc = datetime.now(timezone.utc)
+    now_ist = now_utc + timedelta(hours=5, minutes=30)
+
+    dt = rep.created_at
+    if dt:
+        if dt.tzinfo is None:
+            dt_utc = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt_utc = dt
+        ist_time = dt_utc + timedelta(hours=5, minutes=30)
+    else:
+        dt_utc = now_utc
+        ist_time = now_ist
+
+    return {
+        "id": rep.id,
+        "title": rep.title,
+        "report_type": rep.report_type,
+        "summary_text": rep.summary_text,
+        "data": rep.data,
+        "created_at": dt_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "created_at_ist": ist_time.strftime("%I:%M:%S %p IST • %A, %B %d, %Y"),
+        "time_str": ist_time.strftime("%I:%M:%S %p"),
+        "date_str": ist_time.strftime("%A, %B %d, %Y"),
+        "timezone": "IST (UTC+05:30)",
+        "farm_id": rep.farm_id
+    }
 
 
 @router.get("/reports/farm/{farm_id}/master-report.pdf")
@@ -863,7 +909,33 @@ def download_master_consolidated_report(
 @router.get("/reports")
 def list_reports(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     reports = db.query(models.Report).filter(models.Report.user_id == current_user.id).order_by(models.Report.created_at.desc()).all()
-    return reports
+    results = []
+    for r in reports:
+        dt = r.created_at
+        if dt:
+            if dt.tzinfo is None:
+                dt_utc = dt.replace(tzinfo=timezone.utc)
+            else:
+                dt_utc = dt
+            ist_time = dt_utc + timedelta(hours=5, minutes=30)
+        else:
+            dt_utc = datetime.now(timezone.utc)
+            ist_time = dt_utc + timedelta(hours=5, minutes=30)
+            
+        results.append({
+            "id": r.id,
+            "title": r.title,
+            "report_type": r.report_type,
+            "summary_text": r.summary_text,
+            "data": r.data,
+            "created_at": dt_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "created_at_ist": ist_time.strftime("%I:%M:%S %p IST • %A, %B %d, %Y"),
+            "time_str": ist_time.strftime("%I:%M:%S %p"),
+            "date_str": ist_time.strftime("%A, %B %d, %Y"),
+            "timezone": "IST (UTC+05:30)",
+            "farm_id": r.farm_id
+        })
+    return results
 
 @router.delete("/reports/{report_id}")
 def delete_report(report_id: str, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):

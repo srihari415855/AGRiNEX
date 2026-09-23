@@ -54,7 +54,7 @@ export default function ReportsPage() {
   };
 
   const formatExactISTTime = (rawDate?: string, fallbackTime?: string) => {
-    if (fallbackTime && /^\d{2}:\d{2}:\d{2}\s+(AM|PM)$/i.test(fallbackTime.trim())) {
+    if (fallbackTime && fallbackTime.trim()) {
       return fallbackTime.trim();
     }
     const d = parseToDate(rawDate);
@@ -68,7 +68,7 @@ export default function ReportsPage() {
   };
 
   const formatExactISTDate = (rawDate?: string, fallbackDate?: string) => {
-    if (fallbackDate && fallbackDate.length > 5) {
+    if (fallbackDate && fallbackDate.trim().length > 3) {
       return fallbackDate.trim();
     }
     const d = parseToDate(rawDate);

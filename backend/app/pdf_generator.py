@@ -1,6 +1,6 @@
 import io
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from xml.sax.saxutils import escape
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
@@ -100,7 +100,8 @@ def generate_master_report_pdf(data: dict, title: str, current_user_email: str) 
     lon = coords.get("longitude", 74.5560) if isinstance(coords, dict) else 74.5560
     coord_str = f"{lat}&deg;N, {lon}&deg;E"
 
-    gen_time = datetime.now(timezone.utc).strftime("%B %d, %Y - %H:%M UTC")
+    now_ist = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+    gen_time = data.get("generated_at_ist") or now_ist.strftime("%B %d, %Y - %I:%M:%S %p IST")
     farm_name = data.get("farm_name") or "Namfarm"
     farm_loc = data.get("location") or "Bhatkal, Karnataka"
     total_area = data.get("total_area") or "10.0 acre"
@@ -409,7 +410,7 @@ def generate_master_report_pdf(data: dict, title: str, current_user_email: str) 
     ]
     if irrigations:
         for ir in irrigations[:6]:
-            d_str = ir.get("created_at", "")[:16].replace("T", " ")
+            d_str = ir.get("time_str") or (ir.get("created_at_ist") and ir.get("created_at_ist").split(" • ")[0]) or ir.get("created_at", "")[:16].replace("T", " ")
             ir_rows.append(
                 [
                     Paragraph(escape(str(ir.get("id", ""))[:8]), cell_style),
@@ -465,7 +466,7 @@ def generate_master_report_pdf(data: dict, title: str, current_user_email: str) 
     ]
     if productions:
         for p in productions[:6]:
-            d_str = p.get("created_at", "")[:10]
+            d_str = p.get("date_str") or p.get("created_at", "")[:10]
             p_rows.append(
                 [
                     Paragraph(escape(str(p.get("crop", "Produce"))), cell_style),

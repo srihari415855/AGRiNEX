@@ -106,10 +106,33 @@ class WhatIfRequest(BaseModel):
     scenario: str
     language: Optional[str] = "en"
 
+class ChatMessage(BaseModel):
+    role: str # "user" or "assistant"
+    text: str
+
 class AskRequest(BaseModel):
     message: str
+    history: Optional[List[ChatMessage]] = []
     language: Optional[str] = "en"
     farm_id: Optional[str] = None
+    voice_mode: Optional[bool] = False
+
+class TTSRequest(BaseModel):
+    text: str
+    voice_id: Optional[str] = None
+    language: Optional[str] = "en"
+    api_key_override: Optional[str] = None
+
+class VoiceInfo(BaseModel):
+    id: str
+    name: str
+    description: str
+
+class VoiceConfigResponse(BaseModel):
+    elevenlabs_configured: bool
+    gemini_configured: bool
+    default_voice_id: str
+    available_voices: List[VoiceInfo]
 
 class IrrigationStartRequest(BaseModel):
     zone_id: str
