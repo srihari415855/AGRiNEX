@@ -20,6 +20,8 @@ import {
   MapPin,
   Save,
   Building,
+  Clock,
+  Calendar,
 } from "lucide-react";
 import {
   Select,
@@ -58,6 +60,13 @@ export default function DashboardView({ demo }: { demo?: boolean }) {
   const [farm, setFarm] = useState<Farm | null>(null);
   const [weather, setWeather] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [dashboardTime, setDashboardTime] = useState<Date | null>(null);
+
+  useEffect(() => {
+    setDashboardTime(new Date());
+    const timer = setInterval(() => setDashboardTime(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   // Edit Farm Modal State
   const [editOpen, setEditOpen] = useState(false);
@@ -279,6 +288,53 @@ export default function DashboardView({ demo }: { demo?: boolean }) {
             </div>
           )}
         </div>
+
+        {/* Real-Time Live Farm Synchronized Clock & Location Banner */}
+        {dashboardTime && (
+          <div className="flex items-center justify-between p-3.5 rounded-2xl bg-gradient-to-r from-emerald-900 to-emerald-950 text-white shadow-sm flex-wrap gap-3">
+            <div className="flex items-center gap-3">
+              <div className="p-2 rounded-xl bg-white/10 backdrop-blur-xs text-emerald-300">
+                <Clock size={20} className="animate-pulse" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xl font-black font-mono tracking-tight text-white">
+                    {dashboardTime.toLocaleTimeString("en-US", {
+                      timeZone: "Asia/Kolkata",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                      second: "2-digit",
+                      hour12: true,
+                    })}
+                  </span>
+                  <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                    IST (UTC+05:30)
+                  </span>
+                </div>
+                <div className="text-xs text-emerald-200/80 font-medium">
+                  {dashboardTime.toLocaleDateString("en-US", {
+                    timeZone: "Asia/Kolkata",
+                    weekday: "long",
+                    month: "long",
+                    day: "numeric",
+                    year: "numeric",
+                  })}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3 text-xs text-emerald-200/70">
+              <span className="flex items-center gap-1.5 font-medium">
+                <MapPin size={13} className="text-emerald-400" />
+                {farm?.location || "Karnataka, India"}
+              </span>
+              <span>•</span>
+              <span className="bg-emerald-800/60 px-2 py-0.5 rounded text-[11px] text-emerald-200 font-semibold border border-emerald-700/50">
+                AI Ground Truth Active
+              </span>
+            </div>
+          </div>
+        )}
 
         {/* Quick Access Icons */}
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">

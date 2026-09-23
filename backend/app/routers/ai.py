@@ -41,45 +41,73 @@ _load_env_fallback()
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 def call_gemini_api(prompt: str, system_instruction: Optional[str] = None, image_b64: Optional[str] = None, mime_type: str = "image/jpeg") -> Optional[str]:
-    api_key = os.environ.get("GEMINI_API_KEY", GEMINI_API_KEY)
+    # Ensure environment variables are loaded
+    if not os.environ.get("GEMINI_API_KEY"):
+        _load_env_fallback()
+    api_key = os.environ.get("GEMINI_API_KEY", "")
     if not api_key:
         return None
     
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
-    
+    # Process image if present
     parts = []
-    if image_b64:
-        # Strip potential data url prefix if present
-        clean_b64 = image_b64.split(",")[-1] if "," in image_b64 else image_b64
+    if image_b64 and len(image_b64) > 50:
+        clean_b64 = image_b64
+        detected_mime = mime_type
+        if image_b64.startswith("data:") and ";base64," in image_b64:
+            header, clean_b64 = image_b64.split(";base64,", 1)
+            detected_mime = header.replace("data:", "").strip()
+        elif "," in image_b64:
+            clean_b64 = image_b64.split(",", 1)[-1]
+            
         parts.append({
             "inline_data": {
-                "mime_type": mime_type,
-                "data": clean_b64
+                "mime_type": detected_mime or "image/jpeg",
+                "data": clean_b64.strip()
             }
         })
     parts.append({"text": prompt})
     
     payload = {
-        "contents": [{"parts": parts}]
+        "contents": [{"parts": parts}],
+        "generationConfig": {
+            "temperature": 0.2,
+            "maxOutputTokens": 2500,
+            "thinkingConfig": {
+                "thinkingBudget": 0
+            }
+        }
     }
     if system_instruction:
         payload["system_instruction"] = {
             "parts": [{"text": system_instruction}]
         }
-        
-    try:
-        resp = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=12)
-        if resp.status_code == 200:
-            data = resp.json()
-            candidates = data.get("candidates", [])
-            if candidates:
-                c_parts = candidates[0].get("content", {}).get("parts", [])
-                if c_parts and "text" in c_parts[0]:
-                    return c_parts[0]["text"].strip()
-        else:
-            print("Gemini API error:", resp.status_code, resp.text[:200])
-    except Exception as e:
-        print("Gemini API call failed:", e)
+    
+    # Cascade through supported models in case of high demand (503) or rate limits
+    models_to_try = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-3.5-flash", "gemini-2.5-pro"]
+    headers = {"Content-Type": "application/json"}
+    
+    for model_name in models_to_try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+        try:
+            resp = requests.post(url, json=payload, headers=headers, timeout=45)
+            if resp.status_code == 200:
+                data = resp.json()
+                candidates = data.get("candidates", [])
+                if candidates:
+                    c_parts = candidates[0].get("content", {}).get("parts", [])
+                    if c_parts and "text" in c_parts[0]:
+                        return c_parts[0]["text"].strip()
+            elif resp.status_code in (503, 429):
+                print(f"Model {model_name} returned {resp.status_code}, trying fallback model...")
+                continue
+            else:
+                print(f"Gemini API ({model_name}) error:", resp.status_code, resp.text[:200])
+        except requests.exceptions.Timeout:
+            print(f"Gemini API ({model_name}) timed out after 45s, trying fallback...")
+            continue
+        except Exception as e:
+            print(f"Gemini API ({model_name}) call failed:", e)
+            
     return None
 
 
@@ -184,13 +212,61 @@ def analyze_image(req: schemas.ImageAnalysisRequest, db: Session = Depends(get_d
     target_lang = lang_names.get(lang, "English")
     
     result_text = None
-    if req.image_base64 and len(req.image_base64) > 100:
+    if req.image_base64 and len(req.image_base64) > 50:
+        if atype == "soil":
+            prompt = (
+                f"You are AGRiNEX AI, a senior agricultural soil scientist and agronomist. "
+                f"Analyze this soil specimen image in detail and produce a structured, actionable assessment in {target_lang}:\n\n"
+                f"1. VISUAL SOIL CHARACTERISTICS:\n"
+                f"• Texture & Type: (Evaluate color, particle size, sandy/clay/loam composition, tilth)\n"
+                f"• Soil Structure & Moisture: (Clod formation, aggregation, visible moisture depth, aeration)\n"
+                f"• Health Indicators: (Organic matter estimate, salinity signs, compaction, erosion risk)\n\n"
+                f"2. CROP SUITABILITY:\n"
+                f"• Recommend 3-4 commercial crops that will thrive in this soil under current seasonal conditions.\n\n"
+                f"3. ACTIONABLE SOIL AMENDMENT & FERTILIZATION:\n"
+                f"• Organic matter additions (FYM / vermicompost dosage per acre)\n"
+                f"• Basal fertilizer advice (SSP, Potash, biofertilizers like PSB/Azospirillum)\n"
+                f"• Moisture retention practices (mulching, drip fertigation timing)"
+            )
+            system_instruction = "You are AGRiNEX AI Soil Specialist. Provide accurate, professional, scientifically sound soil diagnostics based strictly on the uploaded image."
+        elif atype == "production":
+            prompt = (
+                f"You are AGRiNEX AI Post-Harvest & Quality Specialist. "
+                f"Analyze this harvested produce image and produce a detailed audit in {target_lang}:\n\n"
+                f"1. PRODUCE QUALITY & GRADING:\n"
+                f"• Identified Crop: (Name and visible variety)\n"
+                f"• Visual Quality Grade: (Grade A Premium / Grade B Standard / Grade C Processing)\n"
+                f"• Physical Attributes: (Uniformity, color maturity, surface blemishes, skin firmness)\n\n"
+                f"2. MANDI DISPATCH & STORAGE:\n"
+                f"• Market Dispatch Window: (Recommended hours/days before quality degradation)\n"
+                f"• Estimated Shelf-Life: (Ambient vs cold storage)\n\n"
+                f"3. POST-HARVEST VALUE ENHANCEMENT:\n"
+                f"• Sorting, washing, crate packaging tips to prevent transit loss and obtain premium mandi prices."
+            )
+            system_instruction = "You are AGRiNEX AI Produce Quality Inspector. Provide rigorous post-harvest grading and mandi dispatch recommendations."
+        else: # plant / disease / crop health
+            prompt = (
+                f"You are AGRiNEX AI Chief Plant Pathologist. "
+                f"Perform a precise crop disease and pest diagnostic on this plant/leaf specimen photo in {target_lang}:\n\n"
+                f"1. SPECIMEN OBSERVATION:\n"
+                f"• Identified Crop: (Identify the host crop or leaf type accurately)\n"
+                f"• Observable Symptoms: (Lesions, chlorosis, discoloration, spots, wilting, curling, pest presence)\n\n"
+                f"2. PATHOLOGICAL DIAGNOSIS:\n"
+                f"• Primary Diagnosis: (Exact disease name / pathogen: fungal, bacterial, viral, pest, or nutrient deficiency)\n"
+                f"• Severity & Spread: (Stage 1 Early / Stage 2 Moderate / Stage 3 Severe)\n"
+                f"• Diagnostic Confidence: (e.g. 95.8%)\n\n"
+                f"3. IMMEDIATE ACTION & TREATMENT PROTOCOL:\n"
+                f"• Curative Chemical Spray: (Exact active chemical ingredient & dosage e.g. Mancozeb, Azoxystrobin, Imidacloprid)\n"
+                f"• Organic & Biological Alternatives: (Neem oil, Trichoderma, bio-fungicides)\n"
+                f"• Cultural & Irrigation Control: (Pruning infected foliage, drip management to avoid humidity splash)"
+            )
+            system_instruction = "You are AGRiNEX AI Plant Pathologist. Provide accurate, immediate, and safe agronomic disease diagnostics and spray recommendations."
+
         gemini_result = call_gemini_api(
-            f"Perform an in-depth agronomic analysis of this agricultural {atype} specimen (soil / crop leaf / harvested produce). "
-            f"Provide: 1. Diagnosis / Observed Condition 2. Scientific Indicators 3. Practical management action. "
-            f"Respond clearly in {target_lang}.",
-            system_instruction="You are AGRiNEX AI, an expert agricultural pathologist and soil scientist.",
-            image_b64=req.image_base64
+            prompt=prompt,
+            system_instruction=system_instruction,
+            image_b64=req.image_base64,
+            mime_type=req.mime_type or "image/jpeg"
         )
         if gemini_result:
             result_text = gemini_result
@@ -228,6 +304,13 @@ def analyze_image(req: schemas.ImageAnalysisRequest, db: Session = Depends(get_d
     db.commit()
     db.refresh(analysis)
     
+    dt = analysis.created_at
+    if dt and dt.tzinfo is None:
+        dt_utc = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt_utc = dt or datetime.now(timezone.utc)
+    ist_time = dt_utc + timedelta(hours=5, minutes=30)
+    
     return {
         "id": analysis.id,
         "type": analysis.type,
@@ -235,7 +318,10 @@ def analyze_image(req: schemas.ImageAnalysisRequest, db: Session = Depends(get_d
         "farm_id": analysis.farm_id,
         "user_id": analysis.user_id,
         "zone_id": analysis.zone_id,
-        "created_at": analysis.created_at
+        "created_at": dt_utc.isoformat(),
+        "created_at_ist": ist_time.strftime("%I:%M:%S %p IST • %A, %B %d, %Y"),
+        "time_str": ist_time.strftime("%I:%M:%S %p"),
+        "date_str": ist_time.strftime("%A, %B %d, %Y")
     }
 
 @router.get("/analyses")
@@ -254,7 +340,28 @@ def list_analyses(
     if type:
         query = query.filter(models.Analysis.type == type.lower())
         
-    return query.order_by(models.Analysis.created_at.desc()).all()
+    records = query.order_by(models.Analysis.created_at.desc()).all()
+    results = []
+    for a in records:
+        dt = a.created_at
+        if dt and dt.tzinfo is None:
+            dt_utc = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt_utc = dt or datetime.now(timezone.utc)
+        ist_time = dt_utc + timedelta(hours=5, minutes=30)
+        results.append({
+            "id": a.id,
+            "type": a.type,
+            "result": a.result,
+            "farm_id": a.farm_id,
+            "user_id": a.user_id,
+            "zone_id": a.zone_id,
+            "created_at": dt_utc.isoformat(),
+            "created_at_ist": ist_time.strftime("%I:%M:%S %p IST • %A, %B %d, %Y"),
+            "time_str": ist_time.strftime("%I:%M %p"),
+            "date_str": ist_time.strftime("%a, %b %d, %Y")
+        })
+    return results
 
 @router.delete("/analyses/{analysis_id}")
 def delete_analysis(
@@ -490,15 +597,18 @@ def ask_assistant(req: schemas.AskRequest, db: Session = Depends(get_db)):
         "You are AGRiNEX Farm Intelligence Agent, an expert AI agronomist for Indian agriculture.\n"
         f"You MUST provide your response directly in {target_lang}.\n"
         "Be concise, actionable, and scientifically accurate.\n\n"
-        f"CURRENT REAL-TIME CONTEXT:\n"
-        f"• Accurate Today's Date: {date_str}\n"
-        f"• Accurate Current Time: {time_str}\n"
+        f"CURRENT REAL-TIME CONTEXT (GROUND TRUTH):\n"
+        f"• Today's Exact Date: {date_str}\n"
+        f"• Exact Current Time: {time_str}\n"
+        f"• Timezone: Indian Standard Time (IST, UTC+05:30)\n"
         f"• Active Farm: {farm_name}\n"
         f"• Place / Location: {farm_place} (Coordinates: {lat:.4f}° N, {lon:.4f}° E)\n"
         f"• Live Meteorological Conditions at {farm_place}: {weather_desc}\n"
         f"• Active Zones & Live Telemetry:\n{zones_summary}\n"
         f"• Mandi Market Intelligence: Local APMC Mandi Tomato Modal Price ₹1800-2000/quintal.\n\n"
-        "When asked about current time, date, place, weather, or crop status, ALWAYS base your answers strictly on the real-time context above."
+        f"CRITICAL TIME DIRECTIVE: If the user asks for the current time, date, day, weather, or location, "
+        f"you MUST state the exact current time ({time_str}) and exact date ({date_str}) given above. "
+        "Never say you do not possess real-time information, because real-time ground truth is provided directly to you."
     )
     
     gemini_reply = call_gemini_api(raw_msg, system_instruction=system_instruction)

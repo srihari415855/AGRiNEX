@@ -30,10 +30,56 @@ function formatInt(n: number | undefined | null): string {
 }
 
 export default function ReportsPage() {
-  const { lang, activeFarm } = useApp();
+  const { lang, activeFarm, farms } = useApp();
+  const currentFarm = farms?.find((f: any) => f.id === activeFarm);
   const [masterReport, setMasterReport] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [clockTime, setClockTime] = useState<Date | null>(null);
+
+  useEffect(() => {
+    setClockTime(new Date());
+    const timer = setInterval(() => setClockTime(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const parseToDate = (rawDate?: string): Date => {
+    if (!rawDate) return new Date();
+    let s = String(rawDate).trim();
+    if (!s.endsWith("Z") && !/[+-]\d{2}:\d{2}$/.test(s)) {
+      s += "Z";
+    }
+    const d = new Date(s);
+    return isNaN(d.getTime()) ? new Date() : d;
+  };
+
+  const formatExactISTTime = (rawDate?: string, fallbackTime?: string) => {
+    if (fallbackTime && /^\d{2}:\d{2}:\d{2}\s+(AM|PM)$/i.test(fallbackTime.trim())) {
+      return fallbackTime.trim();
+    }
+    const d = parseToDate(rawDate);
+    return d.toLocaleTimeString("en-US", {
+      timeZone: "Asia/Kolkata",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: true,
+    });
+  };
+
+  const formatExactISTDate = (rawDate?: string, fallbackDate?: string) => {
+    if (fallbackDate && fallbackDate.length > 5) {
+      return fallbackDate.trim();
+    }
+    const d = parseToDate(rawDate);
+    return d.toLocaleDateString("en-US", {
+      timeZone: "Asia/Kolkata",
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+      year: "numeric",
+    });
+  };
 
   const loadConsolidatedReport = async () => {
     const target = activeFarm || "demo-farm";
@@ -93,6 +139,53 @@ export default function ReportsPage() {
           </div>
         </div>
 
+        {/* Real-Time Live Farm Synchronized Clock & Location Banner */}
+        {clockTime && (
+          <div className="flex items-center justify-between p-3.5 rounded-2xl bg-gradient-to-r from-emerald-900 to-emerald-950 text-white shadow-sm flex-wrap gap-3">
+            <div className="flex items-center gap-3">
+              <div className="p-2 rounded-xl bg-white/10 backdrop-blur-xs text-emerald-300">
+                <Clock size={20} className="animate-pulse" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xl font-black font-mono tracking-tight text-white">
+                    {clockTime.toLocaleTimeString("en-US", {
+                      timeZone: "Asia/Kolkata",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                      second: "2-digit",
+                      hour12: true,
+                    })}
+                  </span>
+                  <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                    IST (UTC+05:30)
+                  </span>
+                </div>
+                <div className="text-xs text-emerald-200/80 font-medium">
+                  {clockTime.toLocaleDateString("en-US", {
+                    timeZone: "Asia/Kolkata",
+                    weekday: "long",
+                    month: "long",
+                    day: "numeric",
+                    year: "numeric",
+                  })}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3 text-xs text-emerald-200/70">
+              <span className="flex items-center gap-1.5 font-medium">
+                <MapPin size={13} className="text-emerald-400" />
+                {currentFarm?.location || data.location || "Karnataka, India"}
+              </span>
+              <span>•</span>
+              <span className="bg-emerald-800/60 px-2 py-0.5 rounded text-[11px] text-emerald-200 font-semibold border border-emerald-700/50">
+                AI Ground Truth Active
+              </span>
+            </div>
+          </div>
+        )}
+
         {/* Primary Master Consolidated Banner */}
         <Card className="rounded-2xl border-2 border-emerald-300 bg-gradient-to-r from-emerald-50 via-white to-stone-50 p-6 shadow-sm">
           <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4">
@@ -125,8 +218,16 @@ export default function ReportsPage() {
               <span className="font-semibold text-stone-900">Typography:</span> Times New Roman &bull; 12pt Standard
             </div>
             <div className="flex items-center gap-1.5">
-              <Clock size={16} className="text-stone-400" />
-              <span>Last Synchronized: {data.generated_at ? new Date(data.generated_at).toISOString().replace("T", " ").slice(0, 16) + " UTC" : "Just now"}</span>
+              <Clock size={16} className="text-emerald-700" />
+              <span>
+                Last Synchronized:{" "}
+                <span className="font-semibold text-stone-900 font-mono">
+                  {data.generated_at_ist ||
+                    (data.generated_at
+                      ? `${formatExactISTTime(data.generated_at)} IST (UTC+05:30) • ${formatExactISTDate(data.generated_at)}`
+                      : "Synchronized Live")}
+                </span>
+              </span>
             </div>
           </div>
         </Card>
@@ -224,11 +325,23 @@ export default function ReportsPage() {
                   <p className="text-stone-500 py-3">No soil analyses saved yet. Baseline loam profile active.</p>
                 ) : (
                   soilAnalyses.slice(0, 3).map((s: any) => (
-                    <div key={s.id} className="p-2.5 rounded-lg bg-stone-50 border border-stone-200">
-                      <div className="font-bold text-stone-800 mb-1">
-                        Log #{s.id.slice(0, 8)} &bull; {s.created_at.slice(0, 10)}
+                    <div key={s.id} className="p-3 rounded-xl bg-stone-50 border border-stone-200 space-y-1.5">
+                      <div className="flex items-center justify-between flex-wrap gap-1">
+                        <span className="font-bold text-xs text-stone-900">
+                          Log #{s.id.slice(0, 8)}
+                        </span>
+                        <div className="flex items-center gap-1.5 text-[11px] font-semibold text-stone-700 bg-white px-2 py-0.5 rounded border border-stone-200 shadow-2xs">
+                          <Clock size={11} className="text-emerald-600" />
+                          <span className="font-mono text-stone-900">{formatExactISTTime(s.created_at, s.time_str)}</span>
+                          <span className="text-[9px] font-bold uppercase tracking-wider px-1 py-0.2 rounded bg-emerald-100 text-emerald-800">
+                            IST (UTC+05:30)
+                          </span>
+                        </div>
                       </div>
-                      <div className="text-stone-600 line-clamp-3 font-mono">{s.result}</div>
+                      <div className="text-[11px] text-stone-500 font-medium">
+                        {formatExactISTDate(s.created_at, s.date_str)}
+                      </div>
+                      <div className="text-stone-700 line-clamp-3 font-mono text-xs bg-white p-2 rounded border border-stone-150">{s.result}</div>
                     </div>
                   ))
                 )}
@@ -247,11 +360,23 @@ export default function ReportsPage() {
                   <p className="text-stone-500 py-3">No foliar infections or pathology alerts recorded.</p>
                 ) : (
                   cropAnalyses.slice(0, 3).map((c: any) => (
-                    <div key={c.id} className="p-2.5 rounded-lg bg-stone-50 border border-stone-200">
-                      <div className="font-bold text-stone-800 mb-1">
-                        Diagnosis #{c.id.slice(0, 8)} &bull; {c.created_at.slice(0, 10)}
+                    <div key={c.id} className="p-3 rounded-xl bg-stone-50 border border-stone-200 space-y-1.5">
+                      <div className="flex items-center justify-between flex-wrap gap-1">
+                        <span className="font-bold text-xs text-stone-900">
+                          Diagnosis #{c.id.slice(0, 8)}
+                        </span>
+                        <div className="flex items-center gap-1.5 text-[11px] font-semibold text-stone-700 bg-white px-2 py-0.5 rounded border border-stone-200 shadow-2xs">
+                          <Clock size={11} className="text-emerald-600" />
+                          <span className="font-mono text-stone-900">{formatExactISTTime(c.created_at, c.time_str)}</span>
+                          <span className="text-[9px] font-bold uppercase tracking-wider px-1 py-0.2 rounded bg-emerald-100 text-emerald-800">
+                            IST (UTC+05:30)
+                          </span>
+                        </div>
                       </div>
-                      <div className="text-stone-600 line-clamp-3 font-mono">{c.result}</div>
+                      <div className="text-[11px] text-stone-500 font-medium">
+                        {formatExactISTDate(c.created_at, c.date_str)}
+                      </div>
+                      <div className="text-stone-700 line-clamp-3 font-mono text-xs bg-white p-2 rounded border border-stone-150">{c.result}</div>
                     </div>
                   ))
                 )}

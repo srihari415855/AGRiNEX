@@ -1,5 +1,5 @@
 "use client";
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { NavLink, useNavigate } from "@/lib/navigation";
 import { useApp } from "@/lib/AppContext";
 import { t, LANGS } from "@/lib/i18n";
@@ -9,6 +9,7 @@ import {
   Home, Layers, Camera, Leaf, Cloud, Droplets, Flower2, Sparkles,
   ShoppingCart, Users2, PackageOpen, Wallet, BarChart3, MessageSquare, FileText,
   Cpu, Settings as SettingsIcon, LogOut, Menu, X, TreePine, Building, PlusCircle,
+  Clock, Calendar
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -62,6 +63,13 @@ export default function Layout({
   });
 
   const nav = useNavigate();
+  const [now, setNow] = useState<Date | null>(null);
+
+  useEffect(() => {
+    setNow(new Date());
+    const timer = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   const handleCreateFarm = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -126,6 +134,38 @@ export default function Layout({
           </div>
 
           <div className="flex items-center gap-2">
+            {/* Real-time Synchronized Digital Farm Clock */}
+            {now && (
+              <div
+                data-testid="live-clock-pill"
+                className="hidden lg:flex items-center gap-2 px-3 py-1.5 rounded-xl bg-stone-100/90 border border-stone-200/90 text-stone-700 shadow-2xs"
+                title="Synchronized Farm Local Time (IST, UTC+05:30)"
+              >
+                <Clock size={13} className="text-emerald-600 animate-pulse" />
+                <span className="text-xs font-bold font-mono tracking-tight text-stone-800">
+                  {now.toLocaleTimeString("en-US", {
+                    timeZone: "Asia/Kolkata",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    second: "2-digit",
+                    hour12: true,
+                  })}
+                </span>
+                <span className="text-[10px] font-bold text-emerald-800 bg-emerald-100/80 px-1.5 py-0.2 rounded font-mono">
+                  IST (UTC+05:30)
+                </span>
+                <span className="text-stone-300">•</span>
+                <span className="text-xs text-stone-600 font-medium">
+                  {now.toLocaleDateString("en-US", {
+                    timeZone: "Asia/Kolkata",
+                    weekday: "short",
+                    month: "short",
+                    day: "numeric",
+                  })}
+                </span>
+              </div>
+            )}
+
             {!isDemo && user && (
               <Button
                 variant="outline"

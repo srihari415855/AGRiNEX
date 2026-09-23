@@ -302,13 +302,16 @@ def generate_master_report_pdf(data: dict, title: str, current_user_email: str) 
     soil_analyses = data.get("soil_analyses", [])
     if soil_analyses:
         for s in soil_analyses[:5]:
-            d_str = s.get("created_at", "")[:10]
+            time_part = s.get("time_str") or ""
+            date_part = s.get("date_str") or s.get("created_at", "")[:10]
+            tz_part = s.get("timezone", "IST (UTC+05:30)")
+            time_display = f"Time: {time_part} {tz_part} &bull; Date: {date_part}" if time_part else f"Date: {date_part}"
             log_id = s.get("id", "")[:8]
             result_clean = escape(s.get("result", ""))
             s_content = [
                 [
                     Paragraph(
-                        f"<b>Soil Assessment Log #{log_id} &bull; Date: {d_str}</b><br/>{result_clean}",
+                        f"<b>Soil Assessment Log #{log_id} &bull; {time_display}</b><br/>{result_clean}",
                         cell_style,
                     )
                 ]
@@ -348,13 +351,16 @@ def generate_master_report_pdf(data: dict, title: str, current_user_email: str) 
     crop_analyses = data.get("crop_health_analyses", [])
     if crop_analyses:
         for c in crop_analyses[:5]:
-            d_str = c.get("created_at", "")[:10]
+            time_part = c.get("time_str") or ""
+            date_part = c.get("date_str") or c.get("created_at", "")[:10]
+            tz_part = c.get("timezone", "IST (UTC+05:30)")
+            time_display = f"Time: {time_part} {tz_part} &bull; Date: {date_part}" if time_part else f"Date: {date_part}"
             log_id = c.get("id", "")[:8]
             result_clean = escape(c.get("result", ""))
             c_content = [
                 [
                     Paragraph(
-                        f"<b>Crop Pathology Diagnostic #{log_id} &bull; Date: {d_str}</b><br/>{result_clean}",
+                        f"<b>Crop Pathology Diagnostic #{log_id} &bull; {time_display}</b><br/>{result_clean}",
                         cell_style,
                     )
                 ]
