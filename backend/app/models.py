@@ -140,3 +140,23 @@ class Report(Base):
     user = relationship("User", back_populates="reports")
     farm_id = Column(String, ForeignKey("farms.id"), nullable=True)
     farm = relationship("Farm", back_populates="reports")
+
+class BuyerEnquiry(Base):
+    __tablename__ = "buyer_enquiries"
+    
+    id = Column(String, primary_key=True, default=gen_uuid, index=True)
+    crop = Column(String)
+    buyer_name = Column(String)
+    buyer_type = Column(String, nullable=True)
+    offered_price = Column(Float, nullable=True)
+    quantity_kg = Column(Float, nullable=True)
+    grade = Column(String, nullable=True)
+    dispatch_date = Column(String, nullable=True)
+    farmer_phone = Column(String, nullable=True)
+    notes = Column(Text, nullable=True)
+    status = Column(String, default="Desk Review")  # Desk Review, Logistics Assigned, Dispatched, Settled
+    tracking_code = Column(String, nullable=True)
+    created_at = Column(DateTime, default=get_utc_now)
+    
+    user_id = Column(String, ForeignKey("users.id"), nullable=True)
+    farm_id = Column(String, ForeignKey("farms.id"), nullable=True)

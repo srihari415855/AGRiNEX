@@ -264,13 +264,30 @@ export default function AskPage() {
     }
   };
 
-  const samples = [
-    "What is today's exact date, current time, and live weather?",
-    "How is my farm and does any zone need irrigation today?",
-    "What are the current APMC Mandi prices for my area?",
-    "What crop is best suited for my soil and current weather?",
-    "How do I prevent early blight in tomato crops?",
-  ];
+  const sampleMap: Record<string, string[]> = {
+    hi: [
+      "आज की सटीक तारीख, समय और मेरे खेत का मौसम क्या है?",
+      "मेरे खेत की स्थिति कैसी है और क्या किसी ज़ोन में सिंचाई की आवश्यकता है?",
+      "टमाटर और मिर्च का आज का मंडी भाव क्या है?",
+      "मेरी मिट्टी और वर्तमान मौसम के अनुसार कौन सी फसल श्रेष्ठ है?",
+      "टमाटर में झुलसा रोग (Early Blight) की रोकथाम कैसे करें?",
+    ],
+    kn: [
+      "ಇಂದಿನ ನಿಖರ ದಿನಾಂಕ, ಸಮಯ ಮತ್ತು ನನ್ನ ಜಮೀನಿನ ಹವಾಮಾನ ಹೇಗಿದೆ?",
+      "ನನ್ನ ಜಮೀನಿನ ಬೆಳೆಗಳ ಸ್ಥಿತಿ ಹೇಗಿದೆ, ಇಂದು ಯಾವುದಾದರೂ ವಲಯಕ್ಕೆ ನೀರು ಬೇಕೇ?",
+      "ಇಂದಿನ ಕೋಲಾರ ಹಾಗೂ ಬೆಂಗಳೂರು ಮಂಡಿಗಳಲ್ಲಿ ಟೊಮೆಟೊ ಬೆಲೆ ಎಷ್ಟು?",
+      "ನನ್ನ ಜಮೀನಿನ ಮಣ್ಣಿಗೆ ಪ್ರಸ್ತುತ ಯಾವ ಬೆಳೆ ಬೆಳೆಯುವುದು ಸೂಕ್ತ?",
+      "ಟೊಮೆಟೊದಲ್ಲಿ ಕಪ್ಪು ಚುಕ್ಕೆ ರೋಗವನ್ನು ತಡೆಗಟ್ಟುವುದು ಹೇಗೆ?",
+    ],
+    en: [
+      "What is today's exact date, current time, and live weather?",
+      "How is my farm and does any zone need irrigation today?",
+      "What are the current APMC Mandi prices for my area?",
+      "What crop is best suited for my soil and current weather?",
+      "How do I prevent early blight in tomato crops?",
+    ],
+  };
+  const samples = sampleMap[lang] || sampleMap.en;
 
   const clearChat = () => {
     stopSpeaking();
@@ -292,11 +309,11 @@ export default function AskPage() {
             </h1>
             <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-emerald-100 text-emerald-800 border border-emerald-300 shadow-2xs">
               <Sparkles size={11} className="text-emerald-700" />
-              Gemini + ElevenLabs Voice
+              Voice & Farm Advisory
             </span>
           </div>
           <p className="text-xs sm:text-sm text-stone-600 mt-1">
-            Multimodal Agronomic Assistant: Speech-to-Text • Gemini Farm Reasoning • ElevenLabs Voice Synthesis.
+            Agronomic Advisory: Speak or type to ask questions about your crops, weather, soil health, and mandi prices.
           </p>
         </div>
 

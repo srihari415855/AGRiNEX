@@ -49,13 +49,13 @@ export default function Landing() {
       <section className="max-w-6xl mx-auto px-6 py-12 lg:py-20 grid lg:grid-cols-2 gap-12 items-center">
         <div>
           <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200 mb-6">
-            <Sparkles size={12} /> Real-Time Digital Farm Intelligence
+            <Sparkles size={12} /> Real-Time Farm & Crop Advisor
           </span>
           <h1 className="text-4xl sm:text-5xl lg:text-6xl font-black tracking-tight text-stone-900 leading-[1.05] mb-6">
             {t(lang, "tagline")}
           </h1>
           <p className="text-lg text-stone-600 mb-3 leading-relaxed">
-            AGRiNEX is a multilingual, voice-first, AI-powered digital operating system for your actual farm.
+            AGRiNEX is a multilingual, voice-first digital operating system for your actual farm.
           </p>
           <p className="text-sm text-emerald-800 font-semibold uppercase tracking-wider mb-8">
             {t(lang, "hero_sub")}
@@ -81,7 +81,7 @@ export default function Landing() {
           </div>
           <div className="mt-10 grid grid-cols-2 sm:grid-cols-4 gap-4 text-center">
             {[
-              { icon: Camera, label: "Image AI" },
+              { icon: Camera, label: "Crop & Soil Scanner" },
               { icon: Mic, label: "Voice" },
               { icon: Layers, label: "Digital Twin" },
               { icon: Cloud, label: "Weather" },

@@ -1,10 +1,12 @@
 "use client";
 import React, { useState, useEffect } from "react";
+import { usePathname } from "next/navigation";
 import { NavLink, useNavigate } from "@/lib/navigation";
 import { useApp } from "@/lib/AppContext";
 import { t, LANGS } from "@/lib/i18n";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
+import AskAgrinex from "@/components/AskAgrinex";
 import {
   Home, Layers, Camera, Leaf, Cloud, Droplets, Flower2, Sparkles,
   ShoppingCart, Users2, PackageOpen, Wallet, BarChart3, MessageSquare, FileText,
@@ -63,6 +65,7 @@ export default function Layout({
   });
 
   const nav = useNavigate();
+  const pathname = usePathname();
   const [now, setNow] = useState<Date | null>(null);
 
   useEffect(() => {
@@ -363,6 +366,9 @@ export default function Layout({
           </form>
         </DialogContent>
       </Dialog>
+
+      {/* Floating Ask AGRiNEX Assistant */}
+      {pathname !== "/app/ask" && <AskAgrinex />}
     </div>
   );
 }

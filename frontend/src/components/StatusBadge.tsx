@@ -20,13 +20,19 @@ export default function StatusBadge({
   children?: React.ReactNode;
 }) {
   const cls = styles[kind] || styles.RECENT;
+  const label =
+    children ||
+    (kind === "AI_IMAGE_ANALYSIS"
+      ? "PHOTO ANALYSIS"
+      : kind.replace(/_/g, " "));
+
   return (
     <span
       data-testid={`status-badge-${kind.toLowerCase()}`}
       className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-semibold uppercase tracking-wider border ${cls}`}
     >
       <span className="w-1.5 h-1.5 rounded-full bg-current opacity-75" />
-      {children || kind.replace(/_/g, " ")}
+      {label}
     </span>
   );
 }

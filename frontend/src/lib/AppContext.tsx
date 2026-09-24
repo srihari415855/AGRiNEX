@@ -14,6 +14,7 @@ export interface Farm {
   irrigation_method?: string;
   farming_type?: string;
   is_demo?: boolean;
+  zones?: any[];
 }
 
 interface User {

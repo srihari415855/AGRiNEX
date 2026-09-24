@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Response, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone, timedelta
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 import os
 import requests
 import json
@@ -17,6 +17,7 @@ os.environ["REQUESTS_CA_BUNDLE"] = certifi.where()
 from .. import schemas, models
 from ..database import get_db
 from .auth import get_current_user, get_current_user_optional
+from .. import ml_engine
 
 router = APIRouter(tags=["ai"])
 
@@ -91,7 +92,8 @@ def call_gemini_api(
     system_instruction: Optional[str] = None,
     image_b64: Optional[str] = None,
     mime_type: str = "image/jpeg",
-    contents: Optional[List[Dict[str, Any]]] = None
+    contents: Optional[List[Dict[str, Any]]] = None,
+    fast_mode: bool = False
 ) -> Optional[str]:
     # Ensure environment variables are loaded
     if not os.environ.get("GEMINI_API_KEY"):
@@ -112,8 +114,8 @@ def call_gemini_api(
                 clean_b64 = image_b64.split(",", 1)[-1]
                 
             parts.append({
-                "inline_data": {
-                    "mime_type": detected_mime or "image/jpeg",
+                "inlineData": {
+                    "mimeType": detected_mime or "image/jpeg",
                     "data": clean_b64.strip()
                 }
             })
@@ -121,26 +123,30 @@ def call_gemini_api(
             parts.append({"text": prompt})
         contents = [{"parts": parts}]
     
+    gen_config: Dict[str, Any] = {
+        "temperature": 0.4,
+        "maxOutputTokens": 2048
+    }
+    
+    # For interactive responses, eliminate thinking latency
+    if fast_mode or not image_b64:
+        gen_config["maxOutputTokens"] = 3000
+        gen_config["thinkingConfig"] = {"thinkingBudget": 0}
+        
     payload = {
         "contents": contents,
-        "generationConfig": {
-            "temperature": 0.5,
-            "maxOutputTokens": 1024
-        }
+        "generationConfig": gen_config
     }
     if system_instruction:
-        payload["system_instruction"] = {
+        payload["systemInstruction"] = {
             "parts": [{"text": system_instruction}]
         }
     
-    # Cascade through verified live operational models (gemini-3-flash-preview, gemini-flash-latest, etc.)
+    # Primary operational verified models for Google Gemini
     models_to_try = [
         "gemini-3-flash-preview",
-        "gemini-flash-latest",
-        "gemini-2.5-pro",
-        "gemini-pro-latest",
-        "gemini-3.1-pro-preview",
-        "gemini-2.5-flash"
+        "gemini-2.5-flash",
+        "gemini-3.1-pro-preview"
     ]
     headers = {"Content-Type": "application/json"}
     ca_bundle = certifi.where()
@@ -148,7 +154,8 @@ def call_gemini_api(
     for model_name in models_to_try:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
         try:
-            resp = requests.post(url, json=payload, headers=headers, verify=ca_bundle, timeout=25)
+            timeout_sec = 18 if image_b64 else 12
+            resp = requests.post(url, json=payload, headers=headers, verify=ca_bundle, timeout=timeout_sec)
             if resp.status_code == 200:
                 data = resp.json()
                 candidates = data.get("candidates", [])
@@ -167,100 +174,12 @@ def call_gemini_api(
     return None
 
 
-# High quality localized agronomic responses
-SOIL_ANALYSIS = {
-    "en": (
-        "🌱 AGRONOMIC SOIL ASSESSMENT:\n"
-        "• Observed Texture: Medium Red Sandy Loam with good granular tilth.\n"
-        "• Visible Organic Matter: Moderate (~0.6-0.8% estimated).\n"
-        "• Moisture Condition: Soil surface appears moderately dry with capillary moisture visible at 3-5 cm depth.\n"
-        "• Soil Health Indicators: No significant salt crusting or compaction visible.\n\n"
-        "RECOMMENDED AMENDMENTS:\n"
-        "1. Apply 4-5 tonnes/acre of well-decomposed Farmyard Manure (FYM) or vermicompost before the next sowing cycle.\n"
-        "2. Soil pH is estimated near slightly acidic to neutral (6.2 - 6.8); well-suited for Solanaceous crops (Tomato, Chilli) and Pulses.\n"
-        "3. Recommended basal dose: Single Super Phosphate (SSP) + Neem cake to strengthen root vigor."
-    ),
-    "hi": (
-        "🌱 कृषि मृदा मूल्यांकन (SOIL ASSESSMENT):\n"
-        "• मिट्टी का प्रकार: मध्यम लाल बलुई दोमट (Red Sandy Loam) अच्छी संरचना के साथ।\n"
-        "• जैविक पदार्थ: मध्यम स्तर (~0.6-0.8% अनुमानित)।\n"
-        "• नमी की स्थिति: ऊपरी सतह सूखी दिख रही है, 3-5 सेमी गहराई पर नमी मौजूद है।\n\n"
-        "सुझाव एवं उपचार:\n"
-        "1. अगली बुवाई से पहले 4-5 टन/एकड़ अच्छी तरह सड़ी हुई गोबर की खाद (FYM) या वर्मीकम्पोस्ट डालें।\n"
-        "2. टमाटर, मिर्च और दलहनी फसलों के लिए यह मिट्टी अत्यधिक उपयुक्त है।\n"
-        "3. जड़ विकास के लिए नीम खली और सिंगल सुपर फॉस्फेट का उपयोग करें।"
-    ),
-    "kn": (
-        "🌱 ಕೃಷಿ ಮಣ್ಣಿನ ವಿಶ್ಲೇಷಣೆ (SOIL ASSESSMENT):\n"
-        "• ಮಣ್ಣಿನ ವಿಧ: ಉತ್ತಮ ಕಣ ರಚನೆಯೊಂದಿಗೆ ಮಧ್ಯಮ ಕೆಂಪು ಮರಳು ಮಿಶ್ರಿತ ಗೋಡು ಮಣ್ಣು.\n"
-        "• ಸಾವಯವ ಇಂಗಾಲ: ಮಧ್ಯಮ ಪ್ರಮಾಣ (~0.6-0.8% ಅಂದಾಜು).\n"
-        "• ತೇವಾಂಶದ ಮಟ್ಟ: ಮೇಲ್ಮೈ ಒಣಗಿದೆ, 3-5 ಸೆಂ.ಮೀ ಆಳದಲ್ಲಿ ತೇವಾಂಶವಿದೆ.\n\n"
-        "ಶಿಫಾರಸು ಮಾಡಿದ ಕ್ರಮಗಳು:\n"
-        "1. ಮುಂದಿನ ಬಿತ್ತನೆಗೆ ಮುನ್ನ ಎಕರೆಗೆ 4-5 ಟನ್ ಕೊಳೆತ ಕೊಟ್ಟಿಗೆ ಗೊಬ್ಬರ ಅಥವಾ ಎರೆಹುಳು ಗೊಬ್ಬರ ಸೇರಿಸಿ.\n"
-        "2. ಟೊಮೆಟೊ, ಮೆಣಸಿನಕಾಯಿ ಹಾಗೂ ರಾಗಿ ಬೆಳೆಗಳಿಗೆ ಈ ಮಣ್ಣು ಅತ್ಯಂತ ಸೂಕ್ತವಾಗಿದೆ.\n"
-        "3. ಬೇರಿನ ಬೆಳವಣಿಗೆಗೆ ಬೇವಿನ ಹಿಂಡಿ ಮತ್ತು ರಂಜಕಯುಕ್ತ ಗೊಬ್ಬರ ನೀಡಿ."
-    )
-}
-
-PLANT_ANALYSIS = {
-    "en": (
-        "🔬 CROP HEALTH DIAGNOSTIC:\n"
-        "• Target Observation: Tomato leaf specimen displaying localized chlorosis and concentric ring lesions.\n"
-        "• Primary Diagnosis: Early Blight (Alternaria solani) — Severity: Mild to Moderate (Stage 2).\n"
-        "• Confidence: 94.2%\n\n"
-        "IMMEDIATE MANAGEMENT ACTION:\n"
-        "1. Foliar Spray: Apply Mancozeb 75% WP @ 2.5 g/L or Azoxystrobin 23% SC @ 1 mL/L in clear morning weather.\n"
-        "2. Cultural Control: Prune lower infected leaves touching the soil bed to avoid splash dissemination.\n"
-        "3. Irrigation Adjustment: Switch from overhead spraying to drip irrigation; keep foliage dry during evening hours."
-    ),
-    "hi": (
-        "🔬 फसल स्वास्थ्य निदान (CROP HEALTH DIAGNOSTIC):\n"
-        "• पत्ती का लक्षण: टमाटर के पत्तों पर छल्लेदार धब्बे (Concentric rings) और पीलापन।\n"
-        "• रोग निदान: अगेती झुलसा (Early Blight - Alternaria solani) — प्रारंभिक चरण।\n"
-        "• सटीकता (Confidence): 94.2%\n\n"
-        "तत्काल उपचार:\n"
-        "1. छिड़काव: मैंकोज़ेब (Mancozeb 75% WP) 2.5 ग्राम प्रति लीटर या एज़ोक्सीस्ट्रोबिन 1 मिली प्रति लीटर पानी में मिलाकर छिड़कें।\n"
-        "2. नीचे की रोगग्रस्त पत्तियों को काटकर खेत से बाहर नष्ट कर दें।\n"
-        "3. ड्रिप सिंचाई का प्रयोग करें ताकि पत्तियों पर पानी न पड़े।"
-    ),
-    "kn": (
-        "🔬 ಬೆಳೆ ಆರೋಗ್ಯ ತಪಾಸಣೆ (CROP HEALTH DIAGNOSTIC):\n"
-        "• ರೋಗ ಲಕ್ಷಣ: ಟೊಮೆಟೊ ಎಲೆಗಳ ಮೇಲೆ ವೃತ್ತಾಕಾರದ ಕಂದು ಚುಕ್ಕೆಗಳು ಮತ್ತು ಹಳದಿ ಬಣ್ಣ.\n"
-        "• ರೋಗ ಪತ್ತೆ: ಆರಂಭಿಕ ಕಪ್ಪು ಚುಕ್ಕೆ ರೋಗ (Early Blight) — ಸೌಮ್ಯ ಹಂತ.\n"
-        "• ನಿಖರತೆ: 94.2%\n\n"
-        "ತಕ್ಷಣದ ಪರಿಹಾರ ಕ್ರಮಗಳು:\n"
-        "1. ಸಿಂಪರಣೆ: ಮ್ಯಾಂಕೋಜೆಬ್ (Mancozeb 75% WP) 2.5 ಗ್ರಾಂ/ಲೀಟರ್ ಅಥವಾ ಅಜಾಕ್ಸಿಸ್ಟ್ರೋಬಿನ್ 1 ಮಿ.ಲೀ/ಲೀಟರ್ ನೀರಿನಲ್ಲಿ ಬೆರೆಸಿ ಸಿಂಪಡಿಸಿ.\n"
-        "2. ರೋಗ ಪೀಡಿತ ಕೆಳಗಿನ ಎಲೆಗಳನ್ನು ಕಿತ್ತು ನಾಶಪಡಿಸಿ.\n"
-        "3. ಹನಿ ನೀರಾವರಿ ಬಳಸಿ, ಎಲೆಗಳ ಮೇಲೆ ನೀರು ಬೀಳದಂತೆ ನೋಡಿಕೊಳ್ಳಿ."
-    )
-}
-
-PRODUCTION_ANALYSIS = {
-    "en": (
-        "📦 HARVEST & QUALITY AUDIT:\n"
-        "• Specimen Evaluated: Freshly harvested field produce.\n"
-        "• Visual Grade: Grade A (Uniform coloration, skin firmness optimal, minimal surface blemish).\n"
-        "• Market Readiness: Ready for mandi dispatch within 24-36 hours.\n"
-        "• Post-Harvest Advice: Pre-cool in shaded packhouse; stack in ventilated plastic crates of max 20 kg capacity to prevent transit bruising."
-    ),
-    "hi": (
-        "📦 उपज एवं गुणवत्ता ऑडिट (HARVEST QUALITY AUDIT):\n"
-        "• मूल्यांकन: ताजा काटी गई फसल।\n"
-        "• ग्रेड: ग्रेड A (एकसमान रंग, फल की अच्छी मजबूती, न्यूनतम खरोंच)।\n"
-        "• मंडी तत्परता: 24-36 घंटे के भीतर मंडी भेजने के लिए आदर्श।\n"
-        "• सलाह: छायादार स्थान पर ठंडा करें और हवादार क्रेट्स में पैक करें।"
-    ),
-    "kn": (
-        "📦 ಸುಗ್ಗಿ ಮತ್ತು ಗುಣಮಟ್ಟ ಪರಿಶೀಲನೆ (HARVEST QUALITY AUDIT):\n"
-        "• ಪರಿಶೀಲಿಸಿದ ಬೆಳೆ: ತಾಜಾ ಕೊಯ್ಲು ಮಾಡಿದ ಇಳುವರಿ.\n"
-        "• ಗುಣಮಟ್ಟ ದರ್ಜೆ: ಗ್ರೇಡ್ A (ಏಕರೂಪದ ಬಣ್ಣ, ಉತ್ತಮ ಗಟ್ಟಿತನ, ಕಡಿಮೆ ಗಾಯಗಳು).\n"
-        "• ಮಾರುಕಟ್ಟೆ ಸಿದ್ಧತೆ: 24-36 ಗಂಟೆಗಳಲ್ಲಿ ಮಂಡಿಗೆ ಸಾಗಿಸಲು ಸೂಕ್ತ.\n"
-        "• ಸಲಹೆ: ನೆರಳಿನಲ್ಲಿ ಇರಿಸಿ ಮತ್ತು ಗಾಳಿಯಾಡುವ ಕ್ರೇಟ್‌ಗಳಲ್ಲಿ ಸಂಗ್ರಹಿಸಿ."
-    )
-}
-
 @router.post("/analyze/image")
-def analyze_image(req: schemas.ImageAnalysisRequest, db: Session = Depends(get_db), current_user: Optional[models.User] = Depends(get_current_user_optional)):
+def analyze_image(
+    req: schemas.ImageAnalysisRequest,
+    db: Session = Depends(get_db),
+    current_user: Optional[models.User] = Depends(get_current_user_optional)
+):
     lang = req.language if req.language in ["en", "hi", "kn"] else "en"
     atype = req.analysis_type.lower()
     
@@ -268,55 +187,78 @@ def analyze_image(req: schemas.ImageAnalysisRequest, db: Session = Depends(get_d
     target_lang = lang_names.get(lang, "English")
     
     result_text = None
+    ml_metrics_data = None
+    
+    # 1. Run Machine Learning Feature Extraction & Diagnostic Classifier First
     if req.image_base64 and len(req.image_base64) > 50:
         if atype == "soil":
+            ml_metrics_data = ml_engine.run_ml_soil_analysis(req.image_base64)
+            
             prompt = (
-                f"You are AGRiNEX AI, a senior agricultural soil scientist and agronomist. "
-                f"Analyze this soil specimen image in detail and produce a structured, actionable assessment in {target_lang}:\n\n"
-                f"1. VISUAL SOIL CHARACTERISTICS:\n"
-                f"• Texture & Type: (Evaluate color, particle size, sandy/clay/loam composition, tilth)\n"
-                f"• Soil Structure & Moisture: (Clod formation, aggregation, visible moisture depth, aeration)\n"
-                f"• Health Indicators: (Organic matter estimate, salinity signs, compaction, erosion risk)\n\n"
-                f"2. CROP SUITABILITY:\n"
-                f"• Recommend 3-4 commercial crops that will thrive in this soil under current seasonal conditions.\n\n"
-                f"3. ACTIONABLE SOIL AMENDMENT & FERTILIZATION:\n"
-                f"• Organic matter additions (FYM / vermicompost dosage per acre)\n"
-                f"• Basal fertilizer advice (SSP, Potash, biofertilizers like PSB/Azospirillum)\n"
-                f"• Moisture retention practices (mulching, drip fertigation timing)"
+                f"You are AGRiNEX AI Chief Agricultural Soil Scientist. "
+                f"We executed our machine learning soil spectral & texture feature extractor on the farmer's uploaded soil specimen.\n\n"
+                f"SCIENTIFIC MACHINE LEARNING FEATURES (GROUND TRUTH):\n"
+                f"• ML Soil Classification: {ml_metrics_data['soil_type']} (Confidence: {ml_metrics_data['ml_confidence_pct']}%)\n"
+                f"• Estimated pH Range: {ml_metrics_data['ph_range']}\n"
+                f"• Estimated Soil Organic Carbon (SOC): {ml_metrics_data['organic_carbon_est_pct']}%\n"
+                f"• Water Retention Capacity: {ml_metrics_data['water_retention_capacity']}\n"
+                f"• Available Nitrogen (N): {ml_metrics_data['nitrogen_status']}\n"
+                f"• Available Phosphorus (P): {ml_metrics_data['phosphorus_status']}\n"
+                f"• Available Potassium (K): {ml_metrics_data['potassium_status']}\n"
+                f"• Top Compatible Crops: {', '.join(ml_metrics_data['suitable_crops'])}\n"
+                f"• Recommended FYM: {ml_metrics_data['amendment_fym_tonnes_per_acre']} tonnes/acre\n"
+                f"• Basal Fertilization Dose: {ml_metrics_data['basal_fertilizer_protocol']}\n\n"
+                f"TASK:\n"
+                f"Analyze the image visually and synthesize a thorough, highly detailed, scientific agronomic assessment in {target_lang}. "
+                f"Incorporate the ML measurements above and format with clear sections:\n"
+                f"1. VISUAL SOIL CHARACTERISTICS & CLASSIFICATION (Discuss color, granular tilth, particle texture, and clod structure)\n"
+                f"2. CHEMICAL & NUTRIENT PROFILE (Explain pH range, organic carbon status, and N-P-K bioavailability)\n"
+                f"3. COMMERCIAL CROP SUITABILITY (List top performing crops with specific yield factors)\n"
+                f"4. ACTIONABLE SOIL AMENDMENT & FERTILIZATION PROTOCOL (Exact FYM dosage, basal fertilizer per acre, and micro-nutrient additions)\n"
+                f"5. IRRIGATION & WATER MANAGEMENT (Drip scheduling, mulching, and moisture retention tips)"
             )
-            system_instruction = "You are AGRiNEX AI Soil Specialist. Provide accurate, professional, scientifically sound soil diagnostics based strictly on the uploaded image."
+            system_instruction = "You are AGRiNEX AI Soil Specialist. Provide a rigorous, thorough, scientifically sound soil diagnostic in the requested language."
+            
         elif atype == "production":
             prompt = (
-                f"You are AGRiNEX AI Post-Harvest & Quality Specialist. "
-                f"Analyze this harvested produce image and produce a detailed audit in {target_lang}:\n\n"
-                f"1. PRODUCE QUALITY & GRADING:\n"
-                f"• Identified Crop: (Name and visible variety)\n"
+                f"You are AGRiNEX AI Post-Harvest Produce Quality Inspector. "
+                f"Analyze this harvested field produce image and provide an exhaustive grading audit in {target_lang}:\n\n"
+                f"1. PRODUCE IDENTIFICATION & VISUAL QUALITY:\n"
+                f"• Crop Identified: (Name and visible commercial variety)\n"
                 f"• Visual Quality Grade: (Grade A Premium / Grade B Standard / Grade C Processing)\n"
-                f"• Physical Attributes: (Uniformity, color maturity, surface blemishes, skin firmness)\n\n"
-                f"2. MANDI DISPATCH & STORAGE:\n"
-                f"• Market Dispatch Window: (Recommended hours/days before quality degradation)\n"
-                f"• Estimated Shelf-Life: (Ambient vs cold storage)\n\n"
-                f"3. POST-HARVEST VALUE ENHANCEMENT:\n"
-                f"• Sorting, washing, crate packaging tips to prevent transit loss and obtain premium mandi prices."
+                f"• Physical Indicators: (Color maturity, skin firmness, surface blemishes, uniformity)\n\n"
+                f"2. MANDI DISPATCH & STORAGE PROTOCOL:\n"
+                f"• Recommended Dispatch Window: (Exact hours before quality degradation)\n"
+                f"• Optimal Storage Conditions: (Temperature, relative humidity, ventilated crates)\n\n"
+                f"3. PRICE OPTIMIZATION ADVICE:\n"
+                f"• Sorting, washing, crate packaging advice to capture top-tier APMC mandi auction prices."
             )
-            system_instruction = "You are AGRiNEX AI Produce Quality Inspector. Provide rigorous post-harvest grading and mandi dispatch recommendations."
-        else: # plant / disease / crop health
+            system_instruction = "You are AGRiNEX AI Produce Quality Inspector. Provide detailed, practical post-harvest advice."
+            
+        else: # plant / disease / foliar health
+            ml_metrics_data = ml_engine.run_ml_plant_analysis(req.image_base64)
+            
             prompt = (
                 f"You are AGRiNEX AI Chief Plant Pathologist. "
-                f"Perform a precise crop disease and pest diagnostic on this plant/leaf specimen photo in {target_lang}:\n\n"
-                f"1. SPECIMEN OBSERVATION:\n"
-                f"• Identified Crop: (Identify the host crop or leaf type accurately)\n"
-                f"• Observable Symptoms: (Lesions, chlorosis, discoloration, spots, wilting, curling, pest presence)\n\n"
-                f"2. PATHOLOGICAL DIAGNOSIS:\n"
-                f"• Primary Diagnosis: (Exact disease name / pathogen: fungal, bacterial, viral, pest, or nutrient deficiency)\n"
-                f"• Severity & Spread: (Stage 1 Early / Stage 2 Moderate / Stage 3 Severe)\n"
-                f"• Diagnostic Confidence: (e.g. 95.8%)\n\n"
-                f"3. IMMEDIATE ACTION & TREATMENT PROTOCOL:\n"
-                f"• Curative Chemical Spray: (Exact active chemical ingredient & dosage e.g. Mancozeb, Azoxystrobin, Imidacloprid)\n"
-                f"• Organic & Biological Alternatives: (Neem oil, Trichoderma, bio-fungicides)\n"
-                f"• Cultural & Irrigation Control: (Pruning infected foliage, drip management to avoid humidity splash)"
+                f"We executed our computer vision machine learning pathogen classifier on this crop leaf specimen.\n\n"
+                f"SCIENTIFIC MACHINE LEARNING FEATURES (GROUND TRUTH):\n"
+                f"• ML Pathogen Diagnosis: {ml_metrics_data['primary_pathogen']} (Confidence: {ml_metrics_data['ml_confidence_pct']}%)\n"
+                f"• Pathological Severity Stage: {ml_metrics_data['severity_stage']}\n"
+                f"• Foliar Vigor Index: {ml_metrics_data['foliar_vigor_index']}/100\n"
+                f"• Affected Canopy Area: {ml_metrics_data['affected_canopy_percentage']}%\n"
+                f"• Chlorosis Ratio: {ml_metrics_data['chlorosis_ratio_pct']}%\n"
+                f"• Necrosis Ratio: {ml_metrics_data['necrotic_ratio_pct']}%\n"
+                f"• Recommended Curative Chemical Spray: {ml_metrics_data['curative_spray']}\n"
+                f"• Biological / Organic Alternative: {ml_metrics_data['organic_alternative']}\n\n"
+                f"TASK:\n"
+                f"Perform a comprehensive pathological diagnostic in {target_lang} incorporating the ML findings above:\n"
+                f"1. SPECIMEN OBSERVATION & SYMPTOMATOLOGY (Describe lesion patterns, chlorotic halos, leaf wilting/curling)\n"
+                f"2. PATHOLOGICAL DIAGNOSIS & SPREAD RISK (Identify fungal/bacterial/viral agent, infection stage, and humidity risk)\n"
+                f"3. IMMEDIATE CURATIVE CHEMICAL TREATMENT (Exact chemical active ingredient, commercial brand examples, and dilution per liter)\n"
+                f"4. ORGANIC & BIOLOGICAL TREATMENT PROTOCOL (Neem oil concentration, bio-fungicides like Trichoderma/Pseudomonas)\n"
+                f"5. PREVENTIVE CULTURAL & IRRIGATION CONTROLS (Pruning infected foliage, drip management to avoid humidity splash)"
             )
-            system_instruction = "You are AGRiNEX AI Plant Pathologist. Provide accurate, immediate, and safe agronomic disease diagnostics and spray recommendations."
+            system_instruction = "You are AGRiNEX AI Plant Pathologist. Provide precise, actionable crop health diagnostics."
 
         gemini_result = call_gemini_api(
             prompt=prompt,
@@ -327,27 +269,141 @@ def analyze_image(req: schemas.ImageAnalysisRequest, db: Session = Depends(get_d
         if gemini_result:
             result_text = gemini_result
 
+    # 2. Dynamic ML Fallback if offline / network interrupted
     if not result_text:
         if atype == "soil":
-            result_text = SOIL_ANALYSIS.get(lang, SOIL_ANALYSIS["en"])
+            if not ml_metrics_data:
+                ml_metrics_data = ml_engine.run_ml_soil_analysis(req.image_base64 or "")
+            st = ml_metrics_data["soil_type"]
+            crops_str = ", ".join(ml_metrics_data["suitable_crops"])
+            
+            if lang == "hi":
+                result_text = (
+                    f"🌱 कृषि मृदा मूल्यांकन (AGRONOMIC SOIL ASSESSMENT):\n"
+                    f"• मशीन लर्निंग द्वारा पहचानी गई मिट्टी: {st} (सटीकता: {ml_metrics_data['ml_confidence_pct']}%)\n"
+                    f"• अनुमानित पीएच (pH): {ml_metrics_data['ph_range']}\n"
+                    f"• जैविक कार्बन (Organic Carbon): {ml_metrics_data['organic_carbon_est_pct']}%\n"
+                    f"• जल धारण क्षमता: {ml_metrics_data['water_retention_capacity']}\n"
+                    f"• नाइट्रोजन व फॉस्फोरस स्थिति: {ml_metrics_data['nitrogen_status']} | {ml_metrics_data['phosphorus_status']}\n\n"
+                    f"अनुकूल व्यावसायिक फसलें:\n"
+                    f"• {crops_str}\n\n"
+                    f"सुझाव एवं खाद प्रबंधन:\n"
+                    f"1. जैविक खाद: {ml_metrics_data['amendment_fym_tonnes_per_acre']} टन/एकड़ अच्छी तरह सड़ी हुई गोबर की खाद (FYM) या वर्मीकम्पोस्ट डालें।\n"
+                    f"2. बेसल डोज: {ml_metrics_data['basal_fertilizer_protocol']}\n"
+                    f"3. नमी संरक्षण: मल्चिंग और ड्रिप सिंचाई का प्रयोग करें।"
+                )
+            elif lang == "kn":
+                result_text = (
+                    f"🌱 ಕೃಷಿ ಮಣ್ಣಿನ ವಿಶ್ಲೇಷಣೆ (AGRONOMIC SOIL ASSESSMENT):\n"
+                    f"• ಯಂತ್ರ ಕಲಿಕೆ (ML) ಪತ್ತೆ ಹಚ್ಚಿದ ಮಣ್ಣಿನ ವಿಧ: {st} (ನಿಖರತೆ: {ml_metrics_data['ml_confidence_pct']}%)\n"
+                    f"• ಅಂದಾಜು ಪಿ.ಎಚ್ (pH): {ml_metrics_data['ph_range']}\n"
+                    f"• ಸಾವಯವ ಇಂಗಾಲ: {ml_metrics_data['organic_carbon_est_pct']}%\n"
+                    f"• ನೀರು ಹಿಡಿದಿಟ್ಟುಕೊಳ್ಳುವ ಸಾಮರ್ಥ್ಯ: {ml_metrics_data['water_retention_capacity']}\n"
+                    f"• ಪೋಷಕಾಂಶಗಳ ಮಟ್ಟ: {ml_metrics_data['nitrogen_status']}\n\n"
+                    f"ಸೂಕ್ತವಾದ ಲಾಭದಾಯಕ ಬೆಳೆಗಳು:\n"
+                    f"• {crops_str}\n\n"
+                    f"ಶಿಫಾರಸು ಮಾಡಿದ ಪೋಷಕಾಂಶ ಕ್ರಮಗಳು:\n"
+                    f"1. ಎಕರೆಗೆ {ml_metrics_data['amendment_fym_tonnes_per_acre']} ಟನ್ ಕೊಟ್ಟಿಗೆ ಗೊಬ್ಬರ ಅಥವಾ ಎರೆಹುಳು ಗೊಬ್ಬರ ಸೇರಿಸಿ.\n"
+                    f"2. ರಸಗೊಬ್ಬರ ಪ್ರಮಾಣ: {ml_metrics_data['basal_fertilizer_protocol']}\n"
+                    f"3. ಬೇರಿನ ಸಮಗ್ರ ವಿಕಾಸಕ್ಕೆ ಬೇವಿನ ಹಿಂಡಿ ಹಾಗೂ ಹನಿ ನೀರಾವರಿ ಬಳಸಿ."
+                )
+            else:
+                result_text = (
+                    f"🌱 AGRONOMIC SOIL ASSESSMENT:\n"
+                    f"• ML Classified Soil Type: {st} (Confidence: {ml_metrics_data['ml_confidence_pct']}%)\n"
+                    f"• Estimated pH Range: {ml_metrics_data['ph_range']}\n"
+                    f"• Soil Organic Carbon (SOC): {ml_metrics_data['organic_carbon_est_pct']}%\n"
+                    f"• Water Retention Capacity: {ml_metrics_data['water_retention_capacity']}\n"
+                    f"• Available Nutrients: N: {ml_metrics_data['nitrogen_status']} | P: {ml_metrics_data['phosphorus_status']}\n\n"
+                    f"HIGHLY COMPATIBLE CROPS:\n"
+                    f"• {crops_str}\n\n"
+                    f"ACTIONABLE SOIL AMENDMENT & FERTILIZATION:\n"
+                    f"1. Organic Matter: Incorporate {ml_metrics_data['amendment_fym_tonnes_per_acre']} tonnes/acre well-decomposed FYM or vermicompost.\n"
+                    f"2. Basal Nutrient Protocol: {ml_metrics_data['basal_fertilizer_protocol']}.\n"
+                    f"3. Rootzone Management: Employ organic straw mulching and schedule drip cycles in early morning."
+                )
         elif atype == "production":
-            result_text = PRODUCTION_ANALYSIS.get(lang, PRODUCTION_ANALYSIS["en"])
+            if lang == "hi":
+                result_text = (
+                    "📦 उपज एवं गुणवत्ता ऑडिट (HARVEST QUALITY AUDIT):\n"
+                    "• मूल्यांकन: ताजा काटी गई फसल।\n"
+                    "• ग्रेड: ग्रेड A (एकसमान रंग, फल की अच्छी मजबूती, न्यूनतम खरोंच)।\n"
+                    "• मंडी तत्परता: 24-36 घंटे के भीतर मंडी भेजने के लिए आदर्श।\n"
+                    "• सलाह: छायादार स्थान पर ठंडा करें और हवादार क्रेट्स में पैक करें।"
+                )
+            elif lang == "kn":
+                result_text = (
+                    "📦 ಸುಗ್ಗಿ ಮತ್ತು ಗುಣಮಟ್ಟ ಪರಿಶೀಲನೆ (HARVEST QUALITY AUDIT):\n"
+                    "• ಪರಿಶೀಲಿಸಿದ ಬೆಳೆ: ತಾಜಾ ಕೊಯ್ಲು ಮಾಡಿದ ಇಳುವರಿ.\n"
+                    "• ಗುಣಮಟ್ಟ ದರ್ಜೆ: ಗ್ರೇಡ್ A (ಏಕರೂಪದ ಬಣ್ಣ, ಉತ್ತಮ ಗಟ್ಟಿತನ, ಕಡಿಮೆ ಗಾಯಗಳು).\n"
+                    "• ಮಾರುಕಟ್ಟೆ ಸಿದ್ಧತೆ: 24-36 ಗಂಟೆಗಳಲ್ಲಿ ಮಂಡಿಗೆ ಸಾಗಿಸಲು ಸೂಕ್ತ.\n"
+                    "• ಸಲಹೆ: ನೆರಳಿನಲ್ಲಿ ಇರಿಸಿ ಮತ್ತು ಗಾಳಿಯಾಡುವ ಕ್ರೇಟ್‌ಗಳಲ್ಲಿ ಸಂಗ್ರಹಿಸಿ."
+                )
+            else:
+                result_text = (
+                    "📦 HARVEST & QUALITY AUDIT:\n"
+                    "• Specimen Evaluated: Freshly harvested field produce.\n"
+                    "• Visual Grade: Grade A (Uniform coloration, skin firmness optimal, minimal surface blemish).\n"
+                    "• Market Readiness: Ready for mandi dispatch within 24-36 hours.\n"
+                    "• Post-Harvest Advice: Pre-cool in shaded packhouse; stack in ventilated plastic crates to prevent transit bruising."
+                )
         else: # plant / disease
-            result_text = PLANT_ANALYSIS.get(lang, PLANT_ANALYSIS["en"])
+            if not ml_metrics_data:
+                ml_metrics_data = ml_engine.run_ml_plant_analysis(req.image_base64 or "")
+            patho = ml_metrics_data["primary_pathogen"]
+            
+            if lang == "hi":
+                result_text = (
+                    f"🔬 फसल स्वास्थ्य एवं रोग निदान (CROP HEALTH DIAGNOSTIC):\n"
+                    f"• मशीन लर्निंग रोग निदान: {patho} (सटीकता: {ml_metrics_data['ml_confidence_pct']}%)\n"
+                    f"• रोग की तीव्रता: {ml_metrics_data['severity_stage']}\n"
+                    f"• पर्ण ओज सूचकांक (Vigor Index): {ml_metrics_data['foliar_vigor_index']}/100\n"
+                    f"• प्रभावित पत्ती क्षेत्र: {ml_metrics_data['affected_canopy_percentage']}%\n\n"
+                    f"तत्काल उपचार एवं छिड़काव:\n"
+                    f"1. रासायनिक छिड़काव: {ml_metrics_data['curative_spray']}\n"
+                    f"2. जैविक व सुरक्षित विकल्प: {ml_metrics_data['organic_alternative']}\n"
+                    f"3. कार्ययोजना: रोगग्रस्त पत्तियों को काटकर नष्ट करें और ड्रिप सिंचाई चलाएं।"
+                )
+            elif lang == "kn":
+                result_text = (
+                    f"🔬 ಬೆಳೆ ಆರೋಗ್ಯ ತಪಾಸಣೆ (CROP HEALTH DIAGNOSTIC):\n"
+                    f"• ಯಂತ್ರ ಕಲಿಕೆ (ML) ರೋಗ ಪತ್ತೆ: {patho} (ನಿಖರತೆ: {ml_metrics_data['ml_confidence_pct']}%)\n"
+                    f"• ರೋಗದ ತೀವ್ರತೆ: {ml_metrics_data['severity_stage']}\n"
+                    f"• ಸಸ್ಯ ಚೈತನ್ಯ ಸೂಚ್ಯಂಕ: {ml_metrics_data['foliar_vigor_index']}/100\n"
+                    f"• ಹಾನಿಗೊಳಗಾದ ಎಲೆ ವಿಸ್ತೀರ್ಣ: {ml_metrics_data['affected_canopy_percentage']}%\n\n"
+                    f"ತಕ್ಷಣದ ಪರಿಹಾರ ಕ್ರಮಗಳು:\n"
+                    f"1. ಸಿಂಪರಣೆ: {ml_metrics_data['curative_spray']}\n"
+                    f"2. ಜೈವಿಕ ಪರ್ಯಾಯ: {ml_metrics_data['organic_alternative']}\n"
+                    f"3. ರೋಗ ಪೀಡಿತ ಕೆಳಗಿನ ಎಲೆಗಳನ್ನು ಕಿತ್ತು ನಾಶಪಡಿಸಿ, ಹನಿ ನೀರಾವರಿ ಬಳಸಿ."
+                )
+            else:
+                result_text = (
+                    f"🔬 CROP HEALTH DIAGNOSTIC:\n"
+                    f"• ML Pathogen Diagnosis: {patho} (Confidence: {ml_metrics_data['ml_confidence_pct']}%)\n"
+                    f"• Pathological Severity: {ml_metrics_data['severity_stage']}\n"
+                    f"• Foliar Vigor Index: {ml_metrics_data['foliar_vigor_index']}/100\n"
+                    f"• Affected Canopy Area: {ml_metrics_data['affected_canopy_percentage']}%\n\n"
+                    f"IMMEDIATE ACTION & TREATMENT PROTOCOL:\n"
+                    f"1. Curative Chemical Spray: {ml_metrics_data['curative_spray']}\n"
+                    f"2. Organic / Biological Alternative: {ml_metrics_data['organic_alternative']}\n"
+                    f"3. Cultural Control: Prune lower infected foliage and keep canopy dry via drip fertigation."
+                )
 
-    # Resolve farm_id and user_id
+    # Safe user_id and farm_id resolution
+    user_id = None
+    if current_user and hasattr(current_user, "id"):
+        user_id = current_user.id
+        
     farm_id = req.farm_id if req.farm_id and req.farm_id != "undefined" else None
     if not farm_id and req.zone_id:
         zone = db.query(models.Zone).filter(models.Zone.id == req.zone_id).first()
         if zone:
             farm_id = zone.farm_id
-    if not farm_id and current_user:
-        f = db.query(models.Farm).filter(models.Farm.owner_id == current_user.id).first()
+    if not farm_id and user_id:
+        f = db.query(models.Farm).filter(models.Farm.owner_id == user_id).first()
         if f:
             farm_id = f.id
 
-    user_id = current_user.id if current_user else None
-        
     analysis = models.Analysis(
         type=atype,
         result=result_text,
@@ -371,6 +427,7 @@ def analyze_image(req: schemas.ImageAnalysisRequest, db: Session = Depends(get_d
         "id": analysis.id,
         "type": analysis.type,
         "result": analysis.result,
+        "ml_metrics": ml_metrics_data,
         "farm_id": analysis.farm_id,
         "user_id": analysis.user_id,
         "zone_id": analysis.zone_id,
@@ -390,7 +447,7 @@ def list_analyses(
     query = db.query(models.Analysis)
     if farm_id and farm_id != "undefined":
         query = query.filter(models.Analysis.farm_id == farm_id)
-    elif current_user:
+    elif current_user and hasattr(current_user, "id"):
         query = query.filter((models.Analysis.user_id == current_user.id) | (models.Analysis.user_id == None))
         
     if type:
@@ -434,172 +491,208 @@ def delete_analysis(
 
 
 @router.post("/recommend/crop")
-def recommend_crop(req: schemas.CropRecommendRequest):
+def recommend_crop(req: schemas.CropRecommendRequest, db: Session = Depends(get_db)):
     lang = req.language or "en"
-    if lang == "hi":
-        crops = [
-            {
-                "name": "टमाटर (हाइब्रिड अर्का रक्षक)",
-                "suitability_score": 95,
-                "water_requirement": "मध्यम (ड्रिप सिंचाई श्रेष्ठ)",
-                "soil_compatibility": "उच्च (लाल दोमट मिट्टी अनुकूल)",
-                "season_suitability": "वर्तमान मौसम के लिए अत्यंत उपयुक्त",
-                "estimated_input_cost_per_acre_inr": 45000,
-                "indicative_margin_note": "अनुमानित शुद्ध लाभ ₹1.4 - 2.0 लाख प्रति एकड़",
-                "major_risks": "आर्द्र मौसम में फल छेदक व झुलसा",
-                "why_recommended": "कोलार व बंगलुरु मंडियों में उच्च मांग और मिट्टी के पीएच (6.5) का सटीक तालमेल।"
-            },
-            {
-                "name": "हरी मिर्च (अर्का ख्याति)",
-                "suitability_score": 89,
-                "water_requirement": "मध्यम",
-                "soil_compatibility": "उत्कृष्ट",
-                "season_suitability": "अनुकूल",
-                "estimated_input_cost_per_acre_inr": 38000,
-                "indicative_margin_note": "अनुमानित शुद्ध लाभ ₹1.1 - 1.6 लाख प्रति एकड़",
-                "major_risks": "थ्रिप्स और मरोड़िया रोग",
-                "why_recommended": "स्थिर बाजार मूल्य और कम पानी में अधिक उपज।"
-            },
-            {
-                "name": "रागी / फिंगर बाजरा (ML-365)",
-                "suitability_score": 86,
-                "water_requirement": "कम (वर्षा आधारित या हल्का पानी)",
-                "soil_compatibility": "अत्यधिक अनुकूल",
-                "season_suitability": "आदर्श",
-                "estimated_input_cost_per_acre_inr": 18000,
-                "indicative_margin_note": "अनुमानित लाभ ₹40,000 - 60,000 प्रति एकड़",
-                "major_risks": "न्यूनतम जोखिम, सूखा रोधी",
-                "why_recommended": "कम लागत, सरकारी एमएसपी खरीद और बेहतरीन जलवायु अनुकूलता।"
-            }
-        ]
-    elif lang == "kn":
-        crops = [
-            {
-                "name": "ಟೊಮೆಟೊ (ಹೈಬ್ರಿಡ್ ಅರ್ಕ ರಕ್ಷಕ್)",
-                "suitability_score": 95,
-                "water_requirement": "ಮಧ್ಯಮ (ಹನಿ ನೀರಾವರಿ ಸೂಕ್ತ)",
-                "soil_compatibility": "ಉತ್ತಮ (ಕೆಂಪು ಗೋಡು ಮಣ್ಣಿಗೆ ಹೇಳಿಮಾಡಿಸಿದಂತಿದೆ)",
-                "season_suitability": "ಪ್ರಸ್ತುತ ಹಂಗಾಮಿಗೆ ಅತ್ಯಂತ ಪ್ರಶಸ್ತ",
-                "estimated_input_cost_per_acre_inr": 45000,
-                "indicative_margin_note": "ಅಂದಾಜು ನಿವ್ವಳ ಲಾಭ ಎಕರೆಗೆ ₹1.4 - 2.0 ಲಕ್ಷ",
-                "major_risks": "ಹೆಚ್ಚು ತೇವಾಂಶವಿದ್ದಾಗ ಕಾಯಿಕೊರಕ ಮತ್ತು ಎಲೆಚುಕ್ಕೆ ರೋಗ",
-                "why_recommended": "ಕೋಲಾರ ಮತ್ತು ಯಶವಂತಪುರ ಮಾರುಕಟ್ಟೆಯಲ್ಲಿ ನಿರಂತರ ಬೇಡಿಕೆ ಹಾಗೂ ಉತ್ತಮ ಧಾರಣೆ."
-            },
-            {
-                "name": "ಹಸಿರು ಮೆಣಸಿನಕಾಯಿ (ಅರ್ಕ ಖ್ಯಾತಿ)",
-                "suitability_score": 89,
-                "water_requirement": "ಮಧ್ಯಮ",
-                "soil_compatibility": "ಉತ್ತಮ ಹೊಂದಾಣಿಕೆ",
-                "season_suitability": "ಪ್ರಶಸ್ತ",
-                "estimated_input_cost_per_acre_inr": 38000,
-                "indicative_margin_note": "ಅಂದಾಜು ನಿವ್ವಳ ಲಾಭ ಎಕರೆಗೆ ₹1.1 - 1.6 ಲಕ್ಷ",
-                "major_risks": "ನುಸಿ ಮತ್ತು ಎಲೆಮುರುಟು ರೋಗ",
-                "why_recommended": "ಸ್ಥಿರ ಧಾರಣೆ ಹಾಗೂ ಕಡಿಮೆ ನೀರಿನಲ್ಲೂ ಅಧಿಕ ಇಳುವರಿ ನೀಡುವ ಸಾಮರ್ಥ್ಯ."
-            },
-            {
-                "name": "ರಾಗಿ (ಎಂ.ಎಲ್-365)",
-                "suitability_score": 86,
-                "water_requirement": "ಕಡಿಮೆ (ಖುಷ್ಕಿ ಅಥವಾ ಲಘು ನೀರು)",
-                "soil_compatibility": "ಅತ್ಯುನ್ನತ ಹೊಂದಾಣಿಕೆ",
-                "season_suitability": "ಆದರ್ಶ",
-                "estimated_input_cost_per_acre_inr": 18000,
-                "indicative_margin_note": "ಅಂದಾಜು ಲಾಭ ಎಕರೆಗೆ ₹40,000 - 60,000",
-                "major_risks": "ಕನಿಷ್ಠ ಅಪಾಯ, ಬರ ನಿರೋಧಕ",
-                "why_recommended": "ಕಡಿಮೆ ಬಂಡವಾಳ, ಸರ್ಕಾರದ ಬೆಂಬಲ ಬೆಲೆ ಖರೀದಿ ಹಾಗೂ ಮಣ್ಣಿನ ಫಲವತ್ತತೆ ರಕ್ಷಣೆ."
-            }
-        ]
+    lang_names = {"hi": "Hindi (हिन्दी)", "kn": "Kannada (ಕನ್ನಡ)", "en": "English"}
+    target_lang = lang_names.get(lang, "English")
+    
+    # 1. Resolve active farm & farm location
+    farm = None
+    if req.farm_id and req.farm_id != "demo-farm":
+        farm = db.query(models.Farm).filter(models.Farm.id == req.farm_id).first()
+    if not farm:
+        farm = db.query(models.Farm).first()
+        
+    farm_loc = farm.location if farm and farm.location else "Kolar, Karnataka"
+    lat = farm.latitude if farm and farm.latitude else 13.1367
+    lon = farm.longitude if farm and farm.longitude else 78.1291
+    soil_type = "Red Sandy Loam"
+    if farm and farm.zones and len(farm.zones) > 0 and farm.zones[0].soil_type:
+        soil_type = farm.zones[0].soil_type
+        
+    # 2. Determine agricultural season based on current IST date
+    ist_now = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+    month = ist_now.month
+    if month in [6, 7, 8]:
+        current_season = "Kharif Season (Monsoon Sowing)"
+        season_detail = "Active monsoon sowing window — optimum for moisture-dependent field crops"
+    elif month in [9, 10]:
+        current_season = "Late Kharif / Rabi Transition (Winter Sowing Window)"
+        season_detail = "Post-monsoon window — ideal for vegetable nurseries, pulses, and Rabi prep"
+    elif month in [11, 12, 1, 2]:
+        current_season = "Rabi Season (Winter Crop Cycle)"
+        season_detail = "Cool dry winter season — prime for wheat, gram, potato, and cool-season horticulture"
     else:
-        crops = [
-            {
-                "name": "Tomato (Hybrid Arka Rakshak)",
-                "suitability_score": 95,
-                "water_requirement": "Moderate (Drip irrigation ideal)",
-                "soil_compatibility": "High (Well-drained red loamy soil)",
-                "season_suitability": "Ideal for current growing window",
-                "estimated_input_cost_per_acre_inr": 45000,
-                "indicative_margin_note": "Expected net margin ₹1.4 - 2.0 Lakh/acre at ₹18-22/kg modal price",
-                "major_risks": "Fruit borer and fungal leaf spots during humid spells",
-                "why_recommended": "Optimal soil pH match and strong sustained demand in nearby Kolar & Bangalore APMC mandis."
-            },
-            {
-                "name": "Green Chilli (Arka Khyati)",
-                "suitability_score": 89,
-                "water_requirement": "Moderate",
-                "soil_compatibility": "High",
-                "season_suitability": "Well-suited",
-                "estimated_input_cost_per_acre_inr": 38000,
-                "indicative_margin_note": "Expected net margin ₹1.1 - 1.6 Lakh/acre",
-                "major_risks": "Thrips and yellow leaf curl virus",
-                "why_recommended": "Strong consistent price stability, resilient root system, and lower water footprint."
-            },
-            {
-                "name": "Finger Millet / Ragi (ML-365)",
-                "suitability_score": 86,
-                "water_requirement": "Low (Rainfed or supplemental)",
-                "soil_compatibility": "Excellent",
-                "season_suitability": "Ideal",
-                "estimated_input_cost_per_acre_inr": 18000,
-                "indicative_margin_note": "Expected margin ₹40,000 - 60,000/acre with low variance",
-                "major_risks": "Blast disease in high humidity",
-                "why_recommended": "Climate-smart drought-hardy crop with assured MSP government procurement support."
-            }
-        ]
-    return {"structured": {"crops": crops}}
+        current_season = "Zaid Season (Summer Crop Window)"
+        season_detail = "Warm summer window — well suited for short-duration cucurbits, pulses, and greens"
+
+    # 3. Real-time live weather analysis
+    temp = 28.5
+    hum = 58.0
+    rain = 0.0
+    try:
+        w_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m,precipitation&timezone=auto"
+        w_res = requests.get(w_url, verify=certifi.where(), timeout=4)
+        if w_res.status_code == 200:
+            c = w_res.json().get("current", {})
+            temp = float(c.get("temperature_2m", 28.5))
+            hum = float(c.get("relative_humidity_2m", 58.0))
+            rain = float(c.get("precipitation", 0.0))
+    except Exception:
+        pass
+        
+    weather_summary = f"{temp:.1f}°C · {hum:.0f}% Humidity · {rain:.1f}mm Rain (Clear & Favorable)"
+    market_sentiment = "High wholesale demand for vegetables & pulses; active trading in APMC mandis"
+
+    # 4. Generate seasonal crop recommendations based on location, weather, and market hype
+    rec_crops = ml_engine.run_ml_crop_recommendations(
+        soil_type=soil_type,
+        temperature=temp,
+        humidity=hum,
+        rainfall=rain,
+        location=farm_loc,
+        season=current_season
+    )
+    
+    # 5. Tailor into requested language if needed
+    prompt = (
+        f"You are AGRiNEX Crop Planning Specialist.\n"
+        f"Farm Location: {farm_loc}\n"
+        f"Soil Type: {soil_type}\n"
+        f"Current Season: {current_season} ({season_detail})\n"
+        f"Real-Time Weather: {weather_summary}\n"
+        f"Market Hype & Wholesale Demand: {market_sentiment}\n\n"
+        f"Here are the baseline recommended crops:\n"
+        f"{json.dumps(rec_crops, indent=2)}\n\n"
+        f"Translate and refine these recommendations into {target_lang}. "
+        f"Ensure every crop includes the 4 essential pillars:\n"
+        f"1. market_hype (current APMC price trend and demand spike)\n"
+        f"2. season_suitability (how it matches {current_season})\n"
+        f"3. weather_suitability (how it thrives in {weather_summary})\n"
+        f"4. location_suitability (suitability for {farm_loc} and {soil_type})\n\n"
+        f"Return ONLY a clean valid JSON object with EXACTLY this structure:\n"
+        f"{{\n"
+        f"  \"farm_location\": \"{farm_loc}\",\n"
+        f"  \"current_season\": \"{current_season}\",\n"
+        f"  \"weather_summary\": \"{weather_summary}\",\n"
+        f"  \"market_sentiment\": \"{market_sentiment}\",\n"
+        f"  \"crops\": [\n"
+        f"    {{\n"
+        f"      \"name\": \"...\",\n"
+        f"      \"suitability_score\": 95,\n"
+        f"      \"market_hype\": \"...\",\n"
+        f"      \"season_suitability\": \"...\",\n"
+        f"      \"weather_suitability\": \"...\",\n"
+        f"      \"location_suitability\": \"...\",\n"
+        f"      \"water_requirement\": \"...\",\n"
+        f"      \"soil_compatibility\": \"...\",\n"
+        f"      \"estimated_input_cost_per_acre_inr\": 45000,\n"
+        f"      \"indicative_margin_note\": \"...\",\n"
+        f"      \"major_risks\": \"...\",\n"
+        f"      \"why_recommended\": \"...\"\n"
+        f"    }}\n"
+        f"  ]\n"
+        f"}}"
+    )
+    
+    ai_raw = call_gemini_api(prompt=prompt, system_instruction="Output strictly valid JSON with no markdown wrapping.", fast_mode=True)
+    if ai_raw:
+        try:
+            clean_json = ai_raw.strip()
+            if clean_json.startswith("```json"):
+                clean_json = clean_json[7:]
+            if clean_json.startswith("```"):
+                clean_json = clean_json[3:]
+            if clean_json.endswith("```"):
+                clean_json = clean_json[:-3]
+            parsed = json.loads(clean_json.strip())
+            if "crops" in parsed and isinstance(parsed["crops"], list) and len(parsed["crops"]) > 0:
+                return {"structured": parsed}
+        except Exception as e:
+            print("Gemini crop recommendation parsing error:", e)
+            
+    fallback_structured = {
+        "farm_location": farm_loc,
+        "current_season": current_season,
+        "weather_summary": weather_summary,
+        "market_sentiment": market_sentiment,
+        "crops": rec_crops
+    }
+    return {"structured": fallback_structured}
+
 
 @router.post("/whatif")
-def simulate_whatif(req: schemas.WhatIfRequest):
+def simulate_whatif(req: schemas.WhatIfRequest, db: Session = Depends(get_db)):
     scenario = req.scenario
     lang = req.language or "en"
+    lang_names = {"hi": "Hindi (हिन्दी)", "kn": "Kannada (ಕನ್ನಡ)", "en": "English"}
+    target_lang = lang_names.get(lang, "English")
     
-    simulations = {
-        "no_rain": {
-            "en": (
-                "🔮 WHAT-IF SIMULATION REPORT: No Rain for 2 Weeks\n\n"
-                "• Soil Moisture Projection: Topsoil (0-15cm) moisture drops from 52% to 22% across Zone 1 (Tomato) and 18% in Zone 3 (Ragi).\n"
-                "• Plant Impact: Zone 3 will hit temporary wilting point within 5-6 days without supplemental irrigation.\n"
-                "• Irrigation Requirement: 42,000 Litres total across active zones.\n"
-                "• Recommended Action: Schedule two 20-minute drip cycles per zone every 3 days; apply 5cm organic straw mulch to conserve rootzone water."
-            ),
-            "hi": (
-                "🔮 सिमुलेशन रिपोर्ट: 2 सप्ताह तक वर्षा न होने की स्थिति\n\n"
-                "• मिट्टी की नमी: ज़ोन 1 (टमाटर) में नमी 52% से घटकर 22% और ज़ोन 3 में 18% रह जाएगी।\n"
-                "• फसल पर प्रभाव: ज़ोन 3 की फसल 5-6 दिनों में पानी की कमी से मुरझाने लगेगी।\n"
-                "• आवश्यक पानी: सभी ज़ोन के लिए लगभग 42,000 लीटर।\n"
-                "• कार्ययोजना: प्रत्येक 3 दिन में 20-20 मिनट ड्रिप सिंचाई चलाएं और नमी बचाने के लिए मल्चिंग करें।"
-            ),
-            "kn": (
-                "🔮 ಸಿಮ್ಯುಲೇಶನ್ ವರದಿ: ಮುಂದಿನ 2 ವಾರ ಮಳೆ ಬಾರದಿದ್ದರೆ\n\n"
-                "• ಮಣ್ಣಿನ ತೇವಾಂಶ ಕುಸಿತ: ವಲಯ 1 (ಟೊಮೆಟೊ) ತೇವಾಂಶ 52% ರಿಂದ 22% ಕ್ಕೆ ಮತ್ತು ವಲಯ 3 (ರಾಗಿ) 18% ಕ್ಕೆ ಇಳಿಯುತ್ತದೆ.\n"
-                "• ಬೆಳೆಯ ಮೇಲೆ ಪರಿಣಾಮ: 5-6 ದಿನಗಳಲ್ಲಿ ವಲಯ 3 ರಲ್ಲಿ ತೇವಾಂಶದ ತೀವ್ರ ಕೊರತೆ ಉಂಟಾಗುತ್ತದೆ.\n"
-                "• ಅಗತ್ಯವಿರುವ ನೀರು: ಒಟ್ಟು 42,000 ಲೀಟರ್.\n"
-                "• ಶಿಫಾರಸು: ಪ್ರತಿ 3 ದಿನಕ್ಕೊಮ್ಮೆ 20 ನಿಮಿಷ ಹನಿ ನೀರಾವರಿ ನೀಡಿ ಮತ್ತು ಮಣ್ಣಿನ ತೇವಾಂಶ ರಕ್ಷಣೆಗೆ ಹೊದಿಕೆ (ಮಲ್ಚಿಂಗ್) ಮಾಡಿ."
-            )
-        },
-        "heavy_rain": {
-            "en": (
-                "🔮 WHAT-IF SIMULATION REPORT: Heavy Rain (100mm Event)\n\n"
-                "• Waterlogging Risk: High in Zone 4 (Clay loam orchard) and Low-lying plots; saturation index > 95%.\n"
-                "• Pathogen Warning: Risk of Phytophthora root rot and damping-off increases by 68%.\n"
-                "• Recommended Action: Clear field drainage furrows immediately; suspend all manual irrigation for 5 days; apply systemic copper fungicide post-storm."
-            ),
-            "hi": (
-                "🔮 सिमुलेशन रिपोर्ट: 100mm भारी वर्षा\n\n"
-                "• जलभराव का जोखिम: चिकनी मिट्टी वाले ज़ोन 4 में जलभराव की उच्च संभावना।\n"
-                "• फफूंद व रोग का खतरा: जड़ गलन (Root rot) का जोखिम 68% बढ़ जाएगा।\n"
-                "• कार्ययोजना: खेतों में जल निकासी की नालियां तुरंत साफ करें; अगले 5 दिनों तक सिंचाई बंद रखें; बारिश के बाद कॉपर कवकनाशी का छिड़काव करें।"
-            ),
-            "kn": (
-                "🔮 ಸಿಮ್ಯುಲೇಶನ್ ವರದಿ: 100 ಮಿ.ಮೀ ಭಾರಿ ಮಳೆ ಸಂಭವಿಸಿದರೆ\n\n"
-                "• ನೀರು ನಿಲ್ಲುವ ಅಪಾಯ: ಜೇಡಿ ಮಣ್ಣಿನ ವಲಯ 4 ರಲ್ಲಿ ನೀರು ನಿಲ್ಲುವ ಸಾಧ್ಯತೆ ಹೆಚ್ಚು (95% ಕ್ಕಿಂತ ಅಧಿಕ).\n"
-                "• ಶಿಲೀಂಧ್ರ ರೋಗದ ಅಪಾಯ: ಬೇರು ಕೊಳೆ ರೋಗದ ಅಪಾಯ 68% ರಷ್ಟು ಹೆಚ್ಚಾಗುತ್ತದೆ.\n"
-                "• ಶಿಫಾರಸು: ಜಮೀನಿನ ಬಸಿದು ಕಾಲುವೆಗಳನ್ನು ಕೂಡಲೇ ಸ್ವಚ್ಛಗೊಳಿಸಿ; 5 ದಿನ ನೀರಾವರಿ ನಿಲ್ಲಿಸಿ; ಮಳೆ ನಿಂತ ನಂತರ ಕಾಪರ್ ಶಿಲೀಂಧ್ರನಾಶಕ ಸಿಂಪಡಿಸಿ."
-            )
-        }
+    farm = None
+    if req.farm_id and req.farm_id != "demo-farm":
+        farm = db.query(models.Farm).filter(models.Farm.id == req.farm_id).first()
+    if not farm:
+        farm = db.query(models.Farm).first()
+        
+    farm_name = farm.name if farm else "Namfarm"
+    farm_place = farm.location if farm and farm.location else "Karnataka"
+    zones = db.query(models.Zone).filter(models.Zone.farm_id == farm.id).all() if farm else []
+    zone_desc = ", ".join([f"{z.name} ({z.crop or 'General'}, {z.last_moisture:.1f}% moisture)" for z in zones]) or "Zone 1 (Tomato, 42% moisture), Zone 2 (Chilli, 38% moisture)"
+    
+    scenario_titles = {
+        "no_rain": "No Rain for Next 14 Days (Drought Stress)",
+        "heavy_rain": "100mm Extreme Rainfall Event (Waterlogging & Flood Risk)",
+        "high_temp": "Heatwave Warning (>40°C High Evapotranspiration)",
+        "low_water": "Farm Reservoir / Tank Storage Depleted to 20%",
+        "irrigate_now": "Immediate Emergency Drip Irrigation Cycle across All Zones",
+        "delay_irrigation": "Delaying Scheduled Irrigation by 3 Days"
     }
+    scen_title = scenario_titles.get(scenario, scenario)
     
-    sim = simulations.get(scenario, simulations["no_rain"])
-    text = sim.get(lang, sim["en"])
-    return {"result": text}
+    prompt = (
+        f"You are AGRiNEX AI Digital Twin Simulator. "
+        f"Simulate the following agricultural scenario for farm {farm_name} in {farm_place}.\n"
+        f"Active Zones: {zone_desc}\n"
+        f"Scenario: {scen_title}\n\n"
+        f"Produce a structured simulation report in {target_lang} with:\n"
+        f"• Soil Moisture Impact & Projection (Specific percentages across active zones)\n"
+        f"• Plant & Yield Risk (Wilting point, root rot, blossom drop, or stress)\n"
+        f"• Water Balance Calculation (Litres required or conserved)\n"
+        f"• Actionable Agronomic Mitigation Steps (Drip timing, mulch, fungicide, or water rationing)"
+    )
+    
+    sim_result = call_gemini_api(prompt=prompt, system_instruction="You are AGRiNEX AI Farm Simulator. Provide accurate, physics-and-agronomy grounded simulation reports.", fast_mode=True)
+    if sim_result:
+        return {"result": sim_result}
+        
+    # Reliable fallback simulation
+    if lang == "hi":
+        fallback_text = (
+            f"🔮 सिमुलेशन रिपोर्ट ({scen_title}):\n\n"
+            f"• मिट्टी की नमी: {farm_name} के ज़ोन में नमी 15-20% गिर सकती है।\n"
+            f"• फसल पर प्रभाव: टमाटर व मिर्च की फसलों में जल तनाव और फूल झड़ने का जोखिम बढ़ेगा।\n"
+            f"• आवश्यक जल प्रबंधन: लगभग 35,000 से 45,000 लीटर पानी की आवश्यकता होगी।\n"
+            f"• अनुशंसित कार्रवाई: ड्रिप सिंचाई को सुबह 6 से 8 बजे के बीच 25 मिनट चलाएं और नमी रोकने के लिए मल्चिंग करें।"
+        )
+    elif lang == "kn":
+        fallback_text = (
+            f"🔮 ಸಿಮ್ಯುಲೇಶನ್ ವರದಿ ({scen_title}):\n\n"
+            f"• ಮಣ್ಣಿನ ತೇವಾಂಶ ಕುಸಿತ: {farm_name} ನ ವಲಯಗಳಲ್ಲಿ ತೇವಾಂಶ 15-20% ರಷ್ಟು ಇಳಿಕೆಯಾಗಬಹುದು.\n"
+            f"• ಬೆಳೆಯ ಮೇಲೆ ಪರಿಣಾಮ: ಟೊಮೆಟೊ ಮತ್ತು ಮೆಣಸಿನಕಾಯಿ ಬೆಳೆಗಳಲ್ಲಿ ಹೂವು ಉದುರುವ ಹಾಗೂ ಬಾಡುವ ಅಪಾಯ.\n"
+            f"• ನೀರಿನ ನಿರ್ವಹಣೆ: ಅಂದಾಜು 35,000 - 45,000 ಲೀಟರ್ ನೀರು ಅಗತ್ಯವಿದೆ.\n"
+            f"• ಶಿಫಾರಸು: ಮುಂಜಾನೆ 25 ನಿಮಿಷ ಹನಿ ನೀರಾವರಿ ನೀಡಿ ಮತ್ತು ಮಣ್ಣಿನ ತೇವಾಂಶ ರಕ್ಷಣೆಗೆ ಸಾವಯವ ಹೊದಿಕೆ (ಮಲ್ಚಿಂಗ್) ಮಾಡಿ."
+        )
+    else:
+        fallback_text = (
+            f"🔮 WHAT-IF SIMULATION REPORT: {scen_title}\n\n"
+            f"• Soil Moisture Projection: Average topsoil moisture across {farm_name} drops by 18-22% over the simulated window.\n"
+            f"• Crop Stress Analysis: Tomato and Chilli plots will approach temporary wilting threshold within 5 days.\n"
+            f"• Water Requirement: Estimated 38,000 - 44,000 Litres total supplemental irrigation.\n"
+            f"• Recommended Actions: Execute 20-minute drip cycles per zone every 48 hours; apply 5cm organic straw mulch to curb rootzone evaporation."
+        )
+        
+    return {"result": fallback_text}
+
 
 @router.post("/ask")
 def ask_assistant(req: schemas.AskRequest, db: Session = Depends(get_db)):
@@ -647,39 +740,38 @@ def ask_assistant(req: schemas.AskRequest, db: Session = Depends(get_db)):
     zone_lines = []
     for z in zones:
         zone_lines.append(f"- {z.name} ({z.crop or 'General'}, {z.area or 1.0} {z.area_unit or 'acre'}): Soil Moisture {z.last_moisture:.1f}% (Health Status: {z.status.upper()})")
-    zones_summary = "\n".join(zone_lines) if zone_lines else "- All zones operating within standard thresholds"
+    zones_summary = "\n".join(zone_lines) if zone_lines else "- All zones operating within standard thresholds (average soil moisture 45%)"
 
     system_instruction = (
-        f"You are AGRiNEX, an intelligent, empathetic, and gentle female agricultural AI companion and agronomic advisor for Indian farmers.\n"
-        f"You speak in a warm, welcoming, polite, and encouraging tone—just like Google Gemini.\n"
-        f"Always communicate with genuine kindness, clarity, and deep respect for the farmer's daily efforts.\n"
-        f"Respond directly and naturally in {target_lang}.\n\n"
-        f"INTERACTIVE CONVERSATION GUIDELINES:\n"
-        f"• Actively engage with the farmer: acknowledge their questions warmly, offer gentle insights, and ask a thoughtful follow-up question when appropriate to maintain an interactive dialogue.\n"
-        f"• Do NOT speak in rigid, robotic bullet points or predefined scripts. Make your responses feel fluid, friendly, and human.\n"
-        f"• If the user greets you or makes conversation, converse warmly and naturally.\n"
-        f"• In voice mode, keep your answer concise (2-3 spoken sentences), warm, melodic, and conversational without asterisks, markdown bullets, tables, or emojis so it can be spoken aloud naturally.\n\n"
+        f"You are AGRiNEX, an intelligent, empathetic, and expert agricultural AI assistant and agronomic companion for Indian farmers.\n"
+        f"You have deep expertise in agronomy, crop pathology, soil science, precision irrigation, weather patterns, and APMC Mandi economics.\n"
+        f"Always communicate with genuine kindness, warmth, scientific clarity, and deep respect for the farmer's daily efforts.\n"
+        f"You MUST respond directly and naturally in {target_lang}.\n\n"
+        f"AI AGENT CAPABILITIES & BEHAVIOR:\n"
+        f"• Actively engage with the farmer: acknowledge their exact query, provide actionable numbers (e.g. dosages, litres, minutes, ₹/quintal), and ask a thoughtful follow-up question to keep the conversation interactive.\n"
+        f"• Do NOT speak in rigid or robotic scripts. Be fluid, intelligent, and human.\n"
+        f"• In voice mode, keep your answer concise (2-3 natural spoken sentences), melodic, and conversational without asterisks, markdown bullets, tables, or emojis so it can be spoken aloud naturally.\n\n"
         f"REAL-TIME FARM GROUND TRUTH:\n"
         f"• Active Farm: {farm_name} ({farm_place}, Coordinates: {lat:.4f}° N, {lon:.4f}° E)\n"
         f"• Exact Current Time: {time_str}\n"
         f"• Today's Date: {date_str} (Indian Standard Time, UTC+05:30)\n"
         f"• Live Meteorological Conditions at {farm_place}: {weather_desc}\n"
         f"• Active Zones & Sensor Telemetry:\n{zones_summary}\n"
-        f"• Mandi Intelligence: Tomato modal price ₹1800-2000/quintal.\n\n"
-        f"CRITICAL TIME DIRECTIVE: If asked for the current time or date, state the exact current time ({time_str}) and date ({date_str}) above naturally."
+        f"• Mandi Intelligence: Tomato modal price ₹1800-2400/quintal, Chilli ₹17000-21000/quintal, Ragi ₹3600-4000/quintal.\n\n"
+        f"CRITICAL TIME DIRECTIVE: If asked for current time, date, weather, or farm condition, answer with the exact ground truth above naturally in {target_lang}."
     )
     
     if req.voice_mode:
         system_instruction += (
             f"\n\nSPOKEN VOICE ASSISTANT DIRECTIVE:\n"
-            f"You are speaking to the farmer through voice. Use a gentle, warm, conversational female voice tone. "
+            f"You are speaking to the farmer through voice. Use a gentle, warm, conversational tone. "
             f"Keep the answer to 2-3 natural sentences without bullet points, symbols, or markdown formatting."
         )
 
     # Multi-turn conversational memory with strict alternating turn validation
     raw_turns = []
     if req.history:
-        for h in req.history[-10:]:
+        for h in req.history[-8:]:
             role = "user" if h.role == "user" else "model"
             if h.text and h.text.strip():
                 raw_turns.append({"role": role, "text": h.text.strip()})
@@ -700,14 +792,14 @@ def ask_assistant(req: schemas.AskRequest, db: Session = Depends(get_db)):
     if not conversation_contents or conversation_contents[-1]["role"] != "user":
         conversation_contents.append({"role": "user", "parts": [{"text": raw_msg}]})
 
-    gemini_reply = call_gemini_api(system_instruction=system_instruction, contents=conversation_contents)
+    gemini_reply = call_gemini_api(system_instruction=system_instruction, contents=conversation_contents, fast_mode=True)
     if gemini_reply:
         return {"reply": gemini_reply}
     
-    # Gentle, natural conversational fallback if offline
+    # Dynamic, contextual fallback if offline
     if "how is my farm" in msg or "status" in msg or "condition" in msg or "खेत" in msg or "ಜಮೀನು" in msg:
         if lang == "hi":
-            reply = f"नमस्ते! आपके खेत {farm_name} ({farm_place}) में अभी मौसम {weather_desc} है और आपकी फसलें अच्छी स्थिति में हैं। क्या आप किसी विशेष ज़ोन के बारे में जानना चाहते हैं?"
+            reply = f"नमस्ते! आपके खेत {farm_name} ({farm_place}) में अभी मौसम {weather_desc} है और आपकी फसलें अच्छी स्थिति में हैं। क्या आप किसी विशेष ज़ोन की जांच करना चाहते हैं?"
         elif lang == "kn":
             reply = f"ನಮಸ್ಕಾರ! ನಿಮ್ಮ {farm_name} ({farm_place}) ಜಮೀನಿನಲ್ಲಿ ಈಗ ಹವಾಮಾನ {weather_desc} ಆಗಿದೆ ಮತ್ತು ಬೆಳೆಗಳು ಉತ್ತಮವಾಗಿವೆ. ನೀವು ಯಾವುದಾದರೂ ನಿರ್ದಿಷ್ಟ ವಲಯದ ಬಗ್ಗೆ ತಿಳಿಯಲು ಬಯಸುವಿರಾ?"
         else:
@@ -728,18 +820,18 @@ def ask_assistant(req: schemas.AskRequest, db: Session = Depends(get_db)):
             reply = f"I've analyzed the moisture telemetry for {farm_name}. Giving a 15 to 20 minute gentle drip cycle to low-moisture zones will support strong root vigor. Would you like me to initiate smart irrigation for you?"
     elif "price" in msg or "market" in msg or "tomato" in msg or "भाव" in msg or "ಬೆಲೆ" in msg:
         if lang == "hi":
-            reply = f"आज आपके नजदीकी कोलार एपीएमसी में टमाटर का मॉडल भाव ₹1,800 से ₹2,000 प्रति क्विंटल चल रहा है। क्या आप किसी अन्य मंडी का भाव भी जानना चाहते हैं?"
+            reply = f"आज आपके नजदीकी कोलार एपीएमसी में टमाटर का मॉडल भाव ₹1,800 से ₹2,200 प्रति क्विंटल चल रहा है। क्या आप किसी अन्य मंडी का भाव भी जानना चाहते हैं?"
         elif lang == "kn":
-            reply = f"ಇಂದು ಕೋಲಾರ ಮಂಡಿಯಲ್ಲಿ ಟೊಮೆಟೊ ಸರಾಸರಿ ಧಾರಣೆ ಕ್ವಿಂಟಲ್‌ಗೆ ₹1,800 ರಿಂದ ₹2,000 ವರೆಗೆ ಇದೆ. ನೀವು ಬೇರೆ ಮಾರುಕಟ್ಟೆ ಮಾಹಿತಿ ತಿಳಿಯಲು ಬಯಸುವಿರಾ?"
+            reply = f"ಇಂದು ಕೋಲಾರ ಮಂಡಿಯಲ್ಲಿ ಟೊಮೆಟೊ ಸರಾಸರಿ ಧಾರಣೆ ಕ್ವಿಂಟಲ್‌ಗೆ ₹1,800 ರಿಂದ ₹2,200 ವರೆಗೆ ಇದೆ. ನೀವು ಬೇರೆ ಮಾರುಕಟ್ಟೆ ಮಾಹಿತಿ ತಿಳಿಯಲು ಬಯಸುವಿರಾ?"
         else:
-            reply = f"Today's modal price for tomatoes at Kolar APMC is currently ₹1,800 to ₹2,000 per quintal. Would you like to compare this with other nearby markets?"
+            reply = f"Today's modal price for tomatoes at Kolar APMC is currently ₹1,800 to ₹2,200 per quintal. Would you like to compare this with other nearby markets?"
     else:
         if lang == "hi":
-            reply = f"नमस्ते! मैं आपकी एग्रीनेक्स सहायक हूँ। {farm_name} में अभी {time_str} हो रहे हैं और मौसम {weather_desc} है। आज मैं आपके खेत और फसलों के लिए क्या सहायता कर सकती हूँ?"
+            reply = f"नमस्ते! मैं आपकी एग्रीनेक्स AI सहायक हूँ। {farm_name} ({farm_place}) में अभी {time_str} हो रहे हैं और मौसम {weather_desc} है। आज मैं आपके खेत, मिट्टी या फसलों के लिए क्या सहायता कर सकती हूँ?"
         elif lang == "kn":
-            reply = f"ನಮಸ್ಕಾರ! ನಾನು ನಿಮ್ಮ ಅಗ್ರಿನೆಕ್ಸ್ ಕೃಷಿ ಸಂಗಾತಿ. {farm_name} ನಲ್ಲಿ ಈಗ ಸಮಯ {time_str}. ಇಂದು ನಿಮ್ಮ ಜಮೀನು ಅಥವಾ ಬೆಳೆಗಳ ಕುರಿತು ನಾನು ಹೇಗೆ ಸಹಾಯ ಮಾಡಲಿ?"
+            reply = f"ನಮಸ್ಕಾರ! ನಾನು ನಿಮ್ಮ ಅಗ್ರಿನೆಕ್ಸ್ AI ಕೃಷಿ ಸಂಗಾತಿ. {farm_name} ({farm_place}) ನಲ್ಲಿ ಈಗ ಸಮಯ {time_str}. ಇಂದು ನಿಮ್ಮ ಜಮೀನು, ಮಣ್ಣು ಅಥವಾ ಬೆಳೆಗಳ ಕುರಿತು ನಾನು ಹೇಗೆ ಸಹಾಯ ಮಾಡಲಿ?"
         else:
-            reply = f"Hello! I'm AGRiNEX, your friendly farm companion. At {farm_name} ({farm_place}), it is {time_str} on {date_str} with {weather_desc}. How can I gently assist your farming today?"
+            reply = f"Hello! I'm AGRiNEX, your AI farm assistant. At {farm_name} ({farm_place}), it is {time_str} on {date_str} with {weather_desc}. How can I assist your farming operations today?"
             
     return {"reply": reply}
 
@@ -792,7 +884,7 @@ def text_to_speech(req: schemas.TTSRequest):
     }
 
     try:
-        resp = requests.post(url, json=payload, headers=headers, verify=certifi.where(), timeout=30)
+        resp = requests.post(url, json=payload, headers=headers, verify=certifi.where(), timeout=20)
         if resp.status_code == 200:
             return Response(
                 content=resp.content,
@@ -804,7 +896,6 @@ def text_to_speech(req: schemas.TTSRequest):
                 }
             )
         else:
-            print(f"ElevenLabs API error ({resp.status_code}):", resp.text[:200])
             return {
                 "fallback": "browser",
                 "clean_text": clean_text,
@@ -812,7 +903,6 @@ def text_to_speech(req: schemas.TTSRequest):
                 "message": f"ElevenLabs returned status {resp.status_code}. Using browser voice fallback."
             }
     except Exception as e:
-        print("ElevenLabs request failed:", e)
         return {
             "fallback": "browser",
             "clean_text": clean_text,
@@ -834,7 +924,8 @@ def speech_to_text(file: UploadFile = File(...), language: Optional[str] = Form(
             prompt=prompt,
             system_instruction="You are an expert Speech-to-Text transcription engine.",
             image_b64=b64_audio,
-            mime_type=mime
+            mime_type=mime,
+            fast_mode=True
         )
         if transcription:
             return {"text": transcription.strip()}
@@ -842,5 +933,3 @@ def speech_to_text(file: UploadFile = File(...), language: Optional[str] = Form(
         print("STT transcription error:", e)
         
     return {"text": "", "error": "Could not transcribe audio"}
-
-

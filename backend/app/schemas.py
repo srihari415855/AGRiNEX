@@ -139,6 +139,10 @@ class IrrigationStartRequest(BaseModel):
     duration_minutes: int = 15
     confirmed: bool = True
 
+class IrrigationStopRequest(BaseModel):
+    zone_id: Optional[str] = None
+    event_id: Optional[str] = None
+
 class ProductionCreateRequest(BaseModel):
     zone_id: Optional[str] = None
     crop: str
@@ -150,3 +154,32 @@ class ProductionCreateRequest(BaseModel):
 class DeviceCreateRequest(BaseModel):
     name: str
     device_type: str = "soil_moisture"
+
+class BuyerEnquiryCreate(BaseModel):
+    crop: str
+    buyer_name: str
+    buyer_type: Optional[str] = None
+    offered_price: Optional[float] = None
+    quantity_kg: Optional[float] = None
+    grade: Optional[str] = "Grade A"
+    dispatch_date: Optional[str] = None
+    farmer_phone: Optional[str] = None
+    notes: Optional[str] = None
+    farm_id: Optional[str] = None
+
+class BuyerEnquiryResponse(BaseModel):
+    id: str
+    crop: str
+    buyer_name: str
+    buyer_type: Optional[str] = None
+    offered_price: Optional[float] = None
+    quantity_kg: Optional[float] = None
+    grade: Optional[str] = None
+    dispatch_date: Optional[str] = None
+    farmer_phone: Optional[str] = None
+    notes: Optional[str] = None
+    status: str
+    tracking_code: Optional[str] = None
+    created_at: datetime
+    class Config:
+        from_attributes = True

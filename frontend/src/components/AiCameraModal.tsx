@@ -50,7 +50,7 @@ export default function AiCameraModal({
         <div className="p-6 border-b border-gray-100 flex justify-between items-center bg-gradient-to-r from-emerald-500 to-teal-600 text-white">
           <div className="flex items-center gap-2">
             <Sparkles className="w-6 h-6" />
-            <h3 className="text-xl font-bold">AGRiNEX AI Insights</h3>
+            <h3 className="text-xl font-bold">AGRiNEX Crop & Soil Insights</h3>
           </div>
           <button onClick={onClose} className="p-2 bg-white/20 hover:bg-white/30 rounded-full transition-colors">
             <X className="w-5 h-5" />
